@@ -754,6 +754,21 @@ local function isMovementActive()
     return Cfg.AutoFarmBosses or Cfg.AutoFarmLevel or Cfg.AutoFarmNearest or Cfg.AutoChestTween or (Cfg.AutoCollectFruit and State.IsCollectingFruitMoving) or Cfg.AutoTeleportIsland
 end
 
+local function isUsingFlightSkill()
+    local char = plr.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local tool = char:FindFirstChildOfClass("Tool")
+    if not hum then return false end
+    if tool and isCombatFruit(tool) then return true end
+    local state = hum:GetState()
+    if (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Physics) 
+       and not State.IsMoving and not State.BodyVelocity then
+        return true
+    end
+    return false
+end
+
 local function straightenChar(char, hrp)
     if not hrp then return end
     pcall(function()
@@ -781,6 +796,7 @@ local function straightenChar(char, hrp)
 end
 
 local function stopBodyMovers()
+    if isUsingFlightSkill() and not State.IsMoving then return end
     pcall(function()
         State.IsMoving = false
         State.IsHoveringAtTarget = false
@@ -873,6 +889,7 @@ local function initNoclip()
     if State.Connections.Noclip then return end
     local wasFlying = false
     State.Connections.Noclip = RunService.Stepped:Connect(function()
+        if isUsingFlightSkill() then return end
         local char = plr.Character
         if not char then return end
         local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -923,6 +940,7 @@ end
 initNoclip()
 
 State.Connections.AntiLandAnim = RunService.Stepped:Connect(function()
+    if isUsingFlightSkill() then return end
     if not State.IsMoving and not isMovementActive() then return end
     local char = plr.Character
     if not char then return end
@@ -957,6 +975,7 @@ State.Connections.AntiJitter = RunService.RenderStepped:Connect(function()
 end)
 
 State.Connections.AntiTilt = RunService.RenderStepped:Connect(function()
+    if isUsingFlightSkill() then return end
     local char = plr.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -1580,6 +1599,10 @@ local BLOCKED_KEYWORDS = {
 local function getFruitFromObj(obj)
     if not obj or not obj.Parent then return nil end
     if Players:GetPlayerFromCharacter(obj) then return nil end
+    
+    if obj.Name == "IceRock" or obj:FindFirstAncestor("Iceberg") then
+        return nil
+    end
 
     local ln = string.lower(obj.Name)
 
@@ -2964,7 +2987,7 @@ task.spawn(function()
     end
 end)
 
--- Auto Second Sea Quest (fixed: after opening door fly directly to Ice Admiral)
+-- Auto Second Sea Quest
 task.spawn(function()
     while not State.IsScriptDestroyed do
         task.wait(0.2)
@@ -3964,6 +3987,6 @@ Window:SelectTab(1)
 
 Fluent:Notify({
     Title = "Irish Hub",
-    Content = "loaded",
+    Content = "Irish loaded",
     Duration = 3
 })
