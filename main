@@ -592,8 +592,7 @@ local function restoreOrigPart(part)
     if part:GetAttribute("Irish_OrigAnchored") ~= nil then pcall(function() part.Anchored = part:GetAttribute("Irish_OrigAnchored") end) part:SetAttribute("Irish_OrigAnchored", nil) end
     if part:GetAttribute("Irish_OrigCanCollide") ~= nil then pcall(function() part.CanCollide = part:GetAttribute("Irish_OrigCanCollide") end) part:SetAttribute("Irish_OrigCanCollide", nil) end
     if part:GetAttribute("Irish_OrigCanTouch") ~= nil then pcall(function() part.CanTouch = part:GetAttribute("Irish_OrigCanTouch") end) part:SetAttribute("Irish_OrigCanTouch", nil) end
-    if part:GetAttribute("Irish_OrigCanQuery") ~= nil then pcall(function() part.CanQuery = part:GetAttribute("Irish_OrigCanQuery") end) part:SetAttribute("Irish_OrigCanQuery", nil) end
-end
+    if part:GetAttribute("Irish_OrigCanQuery") ~= nil then pcall(function() part.CanQuery = part:GetAttribute("Irish_OrigCanQuery") end) part:SetAttribute("Irish_OrigCanQuery", nil) endend
 
 local function saveOrigHum(hum)
     if not hum:GetAttribute("Irish_OrigWalkSpeed") then hum:SetAttribute("Irish_OrigWalkSpeed", hum.WalkSpeed) end
@@ -760,12 +759,23 @@ local function isUsingFlightSkill()
     local hum = char:FindFirstChildOfClass("Humanoid")
     local tool = char:FindFirstChildOfClass("Tool")
     if not hum then return false end
+    
+    -- 1. إذا كان يحمل فاكهة قتالية (مثل Light) نوقف التدخل فوراً
     if tool and isCombatFruit(tool) then return true end
+    
+    -- 2. إذا كان اللاعب في وضع الطيران الطبيعي للعبة (Freefall) والسكريبت لا يطير به
     local state = hum:GetState()
     if (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Physics) 
        and not State.IsMoving and not State.BodyVelocity then
         return true
     end
+    
+    -- 3. فحص إضافي: إذا كان اللاعب يمتلك سرعة عالية في الهواء فجأة (دليل على مهارة طيران)
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hrp and hrp.AssemblyLinearVelocity.Magnitude > 100 and not State.IsMoving then
+        return true
+    end
+    
     return false
 end
 
@@ -2987,7 +2997,7 @@ task.spawn(function()
     end
 end)
 
--- Auto Second Sea Quest
+-- Auto Second Sea Quest (Fixed jitter at boss)
 task.spawn(function()
     while not State.IsScriptDestroyed do
         task.wait(0.2)
@@ -3043,15 +3053,42 @@ task.spawn(function()
                         checkEquipBuso()
                         equipWeapon(true)
                         freezeMob(ia)
+                        
                         local mb = (State.FrozenPositions[ia] and State.FrozenPositions[ia].Position) or sh.Position
                         local so = Cfg.SafeDistance or Vector3.new(0, 10, 0)
                         local nt = mb + so
-                        if validNum(nt.X) then moveToTarget(CFrame.new(nt)) end
-                        if tick() - State.LastAttack >= Cfg.AttackDelay then
-                            State.LastAttack = tick()
-                            attackTarget(ia)
+                        local dist = (hrp.Position - mb).Magnitude
+                        
+                        -- إذا كنا بعيدين، نطير إليه. إذا اقتربنا (أقل من 20)، نوقف الحركة تماماً ونضرب
+                        if dist > 20 then
+                            if validNum(nt.X) then moveToTarget(CFrame.new(nt)) end
+                        else
+                            -- تدمير فيزياء الطيران تماماً لمنع الرجوع للخلف
+                            if State.BodyVelocity then 
+                                pcall(function() State.BodyVelocity:Destroy() end) 
+                                State.BodyVelocity = nil 
+                            end
+                            if State.BodyGyro then 
+                                pcall(function() State.BodyGyro:Destroy() end) 
+                                State.BodyGyro = nil 
+                            end
+                            if State.NoFallAntiGravity then
+                                pcall(function() State.NoFallAntiGravity:Destroy() end)
+                                State.NoFallAntiGravity = nil
+                            end
+                            
+                            hrp.AssemblyLinearVelocity = Vector3.zero
+                            hrp.AssemblyAngularVelocity = Vector3.zero
+                            State.IsMoving = false
+                            
+                            if tick() - State.LastAttack >= Cfg.AttackDelay then
+                                State.LastAttack = tick()
+                                attackTarget(ia)
+                            end
                         end
-                    else unfreezeMob(ia) end
+                    else 
+                        unfreezeMob(ia) 
+                    end
                     return
                 end
 
@@ -3987,6 +4024,6 @@ Window:SelectTab(1)
 
 Fluent:Notify({
     Title = "Irish Hub",
-    Content = "Irish loaded",
+    Content = "loaded",
     Duration = 3
 })
