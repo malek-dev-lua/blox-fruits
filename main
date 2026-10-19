@@ -592,7 +592,8 @@ local function restoreOrigPart(part)
     if part:GetAttribute("Irish_OrigAnchored") ~= nil then pcall(function() part.Anchored = part:GetAttribute("Irish_OrigAnchored") end) part:SetAttribute("Irish_OrigAnchored", nil) end
     if part:GetAttribute("Irish_OrigCanCollide") ~= nil then pcall(function() part.CanCollide = part:GetAttribute("Irish_OrigCanCollide") end) part:SetAttribute("Irish_OrigCanCollide", nil) end
     if part:GetAttribute("Irish_OrigCanTouch") ~= nil then pcall(function() part.CanTouch = part:GetAttribute("Irish_OrigCanTouch") end) part:SetAttribute("Irish_OrigCanTouch", nil) end
-    if part:GetAttribute("Irish_OrigCanQuery") ~= nil then pcall(function() part.CanQuery = part:GetAttribute("Irish_OrigCanQuery") end) part:SetAttribute("Irish_OrigCanQuery", nil) endend
+    if part:GetAttribute("Irish_OrigCanQuery") ~= nil then pcall(function() part.CanQuery = part:GetAttribute("Irish_OrigCanQuery") end) part:SetAttribute("Irish_OrigCanQuery", nil) end
+end
 
 local function saveOrigHum(hum)
     if not hum:GetAttribute("Irish_OrigWalkSpeed") then hum:SetAttribute("Irish_OrigWalkSpeed", hum.WalkSpeed) end
