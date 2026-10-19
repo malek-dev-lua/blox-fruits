@@ -1571,14 +1571,36 @@ local sortedFruitKeys = {}
 for k in pairs(BLOX_FRUIT_ID_MAP) do table.insert(sortedFruitKeys, k) end
 table.sort(sortedFruitKeys, function(a, b) return #a > #b end)
 
+local BLOCKED_KEYWORDS = {
+    "statue", "wall", "block", "crystal", "cave", "rock", "tree",
+    "door", "gate", "pillar", "tower", "iceberg", "glacier", "snowman",
+    "platform", "island", "map", "part", "barrier", "shield"
+}
+
 local function getFruitFromObj(obj)
-    if not obj then return nil end
+    if not obj or not obj.Parent then return nil end
+    if Players:GetPlayerFromCharacter(obj) then return nil end
+
     local ln = string.lower(obj.Name)
-    for _, k in ipairs(sortedFruitKeys) do
-        if string.find(ln, k, 1, true) then return { name = BLOX_FRUIT_ID_MAP[k], isKnown = true, rawName = k } end
+
+    for _, word in ipairs(BLOCKED_KEYWORDS) do
+        if ln:find(word, 1, true) then return nil end
     end
-    if string.find(ln, "fruit") then return { name = "??? Fruit", isKnown = false, rawName = "unknown" } end
-    return nil
+
+    if not ln:find("fruit", 1, true) then
+        if obj:IsA("Tool") and isPhysicalFruit(obj) then
+            return { name = obj.Name, isKnown = true, rawName = normFruitKey(obj.Name) }
+        end
+        return nil
+    end
+
+    for _, k in ipairs(sortedFruitKeys) do
+        if string.find(ln, k, 1, true) then
+            return { name = BLOX_FRUIT_ID_MAP[k], isKnown = true, rawName = k }
+        end
+    end
+
+    return { name = "??? Fruit", isKnown = false, rawName = "unknown" }
 end
 
 local function findAllGroundFruits()
@@ -2942,7 +2964,7 @@ task.spawn(function()
     end
 end)
 
--- Auto Second Sea Quest (Detective path removed: request key directly then go to boss)
+-- Auto Second Sea Quest (fixed: after opening door fly directly to Ice Admiral)
 task.spawn(function()
     while not State.IsScriptDestroyed do
         task.wait(0.2)
