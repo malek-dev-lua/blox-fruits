@@ -330,6 +330,14 @@ getgenv().ChestTween = {
         end);
     end,
     config = CT_CONFIG,
+    _debug = function()
+        return { flying = ctFlying, stopFlag = CT_STOP.flag, flightActive = ctFlight.active,
+            runLock = ctRunLock, hasHRP = ctGetHRP() ~= nil, hasHum = ctGetHum() ~= nil }
+    end,
+    _reset = function()
+        ctFlying = false; CT_STOP.flag = false; ctRunLock = false;
+        pcall(ctEndFlight);
+    end,
 };
 
 local function validNum(n)
@@ -342,6 +350,11 @@ pcall(function()
     lt.FogEnd = 9e9;
     for _, o in ipairs(lt:GetChildren()) do
         if o:IsA("PostEffect") or o:IsA("Atmosphere") or o:IsA("Sky") then o.Enabled = false end;
+    end;
+    local terr = workspace:FindFirstChildOfClass("Terrain");
+    if terr then
+        terr.WaterWaveSize = 0;
+        terr.WaterWaveSpeed = 0;
     end;
 end);
 
@@ -1293,7 +1306,6 @@ State.Connections.AntiJitter = RunService.RenderStepped:Connect(function()
 end);
 
 State.Connections.AntiTilt = RunService.RenderStepped:Connect(function()
-    -- تم الإصلاح: لا يثبت الاتجاه إلا إذا كان أحد أزرار الفارم مفعل!
     if not isMovementActive() then return end;
     if isUsingFlightSkill() then return end;
     if isPlayerCastingSkill() then return end;
@@ -1492,7 +1504,7 @@ local function flyToPrecise(tgtPos, spdOverride, timeout, arriveDist)
         local dv = tgt - cur;
         local dist = dv.Magnitude;
         if not validNum(dist) then break end;
-        if dist <= ad then ok = true; break; end;
+        if dist <= ad then ok = true; break end;
         local ds = spd;
         if dist < 40 then ds = math.max(20, spd * (dist / 40)) end;
         if dist < 15 then ds = math.max(8, spd * (dist / 15) * 0.6) end;
