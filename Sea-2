@@ -1,3 +1,5 @@
+local getgenv = getgenv or function() return _G end;
+
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))();
 
 local UIS = game:GetService("UserInputService");
@@ -10,14 +12,461 @@ local VirtualUser = game:GetService("VirtualUser");
 
 repeat task.wait() until Players.LocalPlayer;
 local plr = Players.LocalPlayer;
+local PlayerGui = plr:WaitForChild("PlayerGui");
+
+if not _G.__ihooked then
+    pcall(function()
+        _G.__ihooked = true;
+        local Notification = require(RS.Notification);
+        local orig = Notification.new;
+        Notification.new = function(msg, ...)
+            local low = tostring(msg):lower();
+            if low:find("store") and low:find("blox fruit") and (low:find("each") or low:find("capacity") or low:find("can")) then
+                return { Display = function() end, Dead = function() return true end };
+            end;
+            return orig(msg, ...);
+        end;
+    end);
+end;
+
+local Flight = {
+    active = false,
+    bodyVelocity = nil,
+    bodyGyro = nil,
+    antiGrav = nil,
+    savedState = nil,
+    savedChar = nil,
+};
+
+local Noclip = { active = false };
+
+local function validNum(n)
+    return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge;
+end;
+
+local function getChar()
+    local c = plr.Character
+    if not c then return nil, nil end
+    return c, c:FindFirstChild("HumanoidRootPart")
+end
+
+local function applyNoclip()
+    local char = getChar()
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            p.CanCollide = false
+            p.CanTouch = true
+            p.CanQuery = true
+        end
+    end
+end
+
+local function applyNormalCollisions()
+    local char = getChar()
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            local n = p.Name
+            if n == "UpperTorso" or n == "LowerTorso" or n == "Torso" or n == "Head" then
+                p.CanCollide = true
+            else
+                p.CanCollide = false
+            end
+            p.CanTouch = true
+            p.CanQuery = true
+        end
+    end
+end
+
+local function saveCharacterState()
+    if Flight.savedState then return end
+    local char, hrp = getChar()
+    if not char or not hrp then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    if hum.Health <= 0 then return end
+    Flight.savedState = {
+        walkSpeed = hum.WalkSpeed,
+        jumpPower = hum.JumpPower,
+        autoRotate = hum.AutoRotate,
+        platformStand = hum.PlatformStand,
+        gravity = workspace.Gravity,
+        anchored = hrp.Anchored,
+    }
+end
+
+local function restoreCharacterState()
+    local char, hrp = getChar()
+    local saved = Flight.savedState
+    Flight.savedState = nil
+    if not saved then return end
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then
+            pcall(function()
+                hum.WalkSpeed = saved.walkSpeed
+                hum.JumpPower = saved.jumpPower
+                hum.AutoRotate = saved.autoRotate
+                hum.PlatformStand = saved.platformStand
+                hum:SetStateEnabled(Enum.HumanoidStateType.Running, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
+                hum:ChangeState(Enum.HumanoidStateType.Running)
+            end)
+        end
+    end
+    if hrp then
+        pcall(function()
+            hrp.Anchored = saved.anchored
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+    if workspace.Gravity ~= saved.gravity then
+        workspace.Gravity = saved.gravity
+    end
+end
+
+local function startFlight()
+    if Flight.active then return true end
+    local char, hrp = getChar()
+    if not char or not hrp then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+
+    if Flight.savedState and Flight.savedChar ~= char then
+        Flight.savedState = nil
+    end
+    Flight.savedChar = char
+
+    saveCharacterState()
+
+    if not Flight.bodyVelocity or Flight.bodyVelocity.Parent ~= hrp then
+        if Flight.bodyVelocity then pcall(function() Flight.bodyVelocity:Destroy() end) end
+        Flight.bodyVelocity = Instance.new("BodyVelocity")
+        Flight.bodyVelocity.Name = "Irish_UnifiedBV"
+        Flight.bodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        Flight.bodyVelocity.Velocity = Vector3.zero
+        Flight.bodyVelocity.Parent = hrp
+    end
+    if not Flight.bodyGyro or Flight.bodyGyro.Parent ~= hrp then
+        if Flight.bodyGyro then pcall(function() Flight.bodyGyro:Destroy() end) end
+        Flight.bodyGyro = Instance.new("BodyGyro")
+        Flight.bodyGyro.Name = "Irish_UnifiedBG"
+        Flight.bodyGyro.MaxTorque = Vector3.new(0, 9e9, 0)
+        Flight.bodyGyro.P = 1e4
+        Flight.bodyGyro.D = 1000
+        Flight.bodyGyro.CFrame = hrp.CFrame
+        Flight.bodyGyro.Parent = hrp
+    end
+    if not Flight.antiGrav or Flight.antiGrav.Parent ~= hrp then
+        if Flight.antiGrav then pcall(function() Flight.antiGrav:Destroy() end) end
+        Flight.antiGrav = Instance.new("BodyForce")
+        Flight.antiGrav.Name = "Irish_UnifiedAntiGrav"
+        Flight.antiGrav.Force = Vector3.new(0, workspace.Gravity * 3.5, 0)
+        Flight.antiGrav.Parent = hrp
+    end
+
+    hrp.Anchored = false
+    pcall(function()
+        hum.PlatformStand = false
+        hum.AutoRotate = false
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        hum:SetStateEnabled(Enum.HumanoidStateType.Running, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Landed, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+        hum:ChangeState(Enum.HumanoidStateType.Freefall)
+    end)
+
+    Flight.active = true
+    Noclip.active = true
+    applyNoclip()
+    return true
+end
+
+local function stopFlight()
+    if not Flight.active and not Flight.savedState then return end
+
+    local char, hrp = getChar()
+    if Flight.bodyVelocity then pcall(function() Flight.bodyVelocity:Destroy() end); Flight.bodyVelocity = nil end
+    if Flight.bodyGyro then pcall(function() Flight.bodyGyro:Destroy() end); Flight.bodyGyro = nil end
+    if Flight.antiGrav then pcall(function() Flight.antiGrav:Destroy() end); Flight.antiGrav = nil end
+
+    if hrp then
+        for _, o in ipairs(hrp:GetChildren()) do
+            if o.Name:match("^Irish_") then pcall(function() o:Destroy() end) end
+        end
+    end
+
+    Flight.active = false
+    Flight.savedChar = nil
+    Noclip.active = false
+
+    if hrp then
+        pcall(function()
+            hrp.Anchored = false
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+
+    restoreCharacterState()
+    applyNormalCollisions()
+end
+
+local function stopAllMovement()
+    stopFlight()
+    local char = getChar()
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 then
+        pcall(function()
+            hum.PlatformStand = false
+            hum.AutoRotate = true
+        end)
+    end
+    applyNormalCollisions()
+end
+
+RunService.Stepped:Connect(function()
+    local char, hrp = getChar()
+    if not char or not hrp then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+
+    if Flight.active then
+        Noclip.active = true
+        applyNoclip()
+        
+        pcall(function()
+            hum:SetStateEnabled(Enum.HumanoidStateType.Running, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Landed, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, false)
+            
+            if hum:GetState() ~= Enum.HumanoidStateType.Freefall then
+                hum:ChangeState(Enum.HumanoidStateType.Freefall)
+            end
+        end)
+    else
+        if Noclip.active then
+            Noclip.active = false
+            applyNormalCollisions()
+        end
+    end
+end)
+
+local function moveToTarget(tgtCF)
+    local char, hrp = getChar()
+    if not char or not hrp then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+    if not tgtCF then return end
+    local tp
+    if typeof(tgtCF) == "CFrame" then tp = tgtCF.Position
+    elseif typeof(tgtCF) == "Vector3" then tp = tgtCF
+    else return end
+    if not validNum(tp.X) then return end
+
+    if not Flight.active then
+        if not startFlight() then return end
+    end
+
+    local cp = hrp.Position
+    if not validNum(cp.X) then return end
+    local dv = tp - cp
+    local td = dv.Magnitude
+    if not validNum(td) then return end
+
+    State.IsMoving = true
+
+    local fs = tonumber(Cfg.FlySpeed) or 170;
+    local cv = hrp.AssemblyLinearVelocity.Magnitude
+    if not validNum(cv) then cv = 0 end
+    local ms = math.clamp(fs, 50, 200)
+    local bd = math.max(3.5, (cv * cv) / (2 * ms) * 0.15)
+    bd = math.clamp(bd, 3.5, 8)
+
+    if td <= bd then
+        if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            if hum:GetState() ~= Enum.HumanoidStateType.Freefall then
+                hum:ChangeState(Enum.HumanoidStateType.Freefall)
+            end
+        end)
+        return
+    end
+
+    local ds = ms
+    if td < 30 then ds = math.max(15, ms * (td / 30)) end
+    if td < 10 then ds = math.max(8, ms * (td / 10) * 0.5) end
+
+    local dir = dv.Unit
+    local vel = Vector3.new(dir.X * ds, dir.Y * ds, dir.Z * ds)
+    if Flight.bodyVelocity and Flight.bodyVelocity.Parent == hrp then
+        Flight.bodyVelocity.Velocity = vel
+    end
+    if Flight.bodyGyro and Flight.bodyGyro.Parent == hrp then
+        Flight.bodyGyro.MaxTorque = Vector3.new(0, 9e9, 0)
+        local hd = Vector3.new(dv.X, 0, dv.Z)
+        if hd.Magnitude > 1.0 then
+            Flight.bodyGyro.CFrame = CFrame.lookAt(cp, cp + hd)
+        else
+            local yaw = math.rad(hrp.Orientation.Y)
+            Flight.bodyGyro.CFrame = CFrame.new(cp) * CFrame.Angles(0, yaw, 0)
+        end
+    end
+end
+
+pcall(function()
+    local lt = game:GetService("Lighting");
+    lt.GlobalShadows = false;
+    lt.FogEnd = 9e9;
+    for _, o in ipairs(lt:GetChildren()) do
+        if o:IsA("PostEffect") or o:IsA("Atmosphere") or o:IsA("Sky") then o.Enabled = false end;
+    end;
+    local terr = workspace:FindFirstChildOfClass("Terrain");
+    if terr then
+        terr.WaterWaveSize = 0;
+        terr.WaterWaveSpeed = 0;
+    end;
+end);
+
+plr.Idled:Connect(function()
+    pcall(function()
+        VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
+        task.wait(0.2);
+        VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
+    end);
+end);
+
+task.spawn(function()
+    while true do
+        task.wait(480);
+        pcall(function()
+            VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
+            task.wait(0.1);
+            VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
+        end);
+    end;
+end);
+
+Cfg = {
+    AutoFarmLevel = false, AutoFarmNearest = false, AutoChestTween = false, AutoFarmFactory = false,
+    AutoSecondSeaQuest = false, StopWhenGetItemInChest = true,
+    AutoCollectFruit = false, AutoStoreFruit = false, AutoRandomFruit = false,
+    AutoStats = false, AutoStatsMelee = false, AutoStatsDefense = false,
+    AutoStatsGun = false, AutoStatsSword = false, AutoStatsFruit = false,
+    StatPointStep = 3, AutoTeleportIsland = false,
+    SelectedIslandCFrame = nil, SelectedIslandName = nil, TeleportFlightThread = nil,
+    SelectedWeapon = "Melee", FlySpeed = 170, AttackDelay = 0.01,
+    AutoBuso = false, AttackAuraAlways = false, SafeDistance = Vector3.new(0, 10, 0),
+    FruitESPEnabled = true, PlayerESPEnabled = true, ESPShowDistance = true,
+    PlayerMovementEnabled = false, WalkSpeedValue = 16, JumpPowerValue = 50,
+    SelectedSea1Boss = "The Gorilla King", AutoFarmBosses = false,
+    FactoryFlySpeed = 200, HoverHeight = 3, FlyArrivalRadius = 5, AttackRange = 35,
+};
+
+State = {
+    QuestState = "IDLE", QuestCooldown = 0, CurrentQuestData = nil,
+    LastAttack = 0, LastM1Time = 0, LastBuso = 0, CurrentTargetMob = nil,
+    IsMoving = false, IsHoveringAtTarget = false,
+    IsCollectingFruitMoving = false, LastVelocityMagnitude = 0, Connections = {},
+    CachedCharacterParts = {}, IsScriptDestroyed = false, ActiveESPItems = {},
+    FrozenPositions = {}, FruitStoreCooldown = {}, ChestRegistry = {},
+    CollectedChests = {}, IgnoredGroundFruits = {}, GroundFruitTouchAttempts = {},
+    IsStoringFruitActive = false, CurrentPatrolIndex = 1, PatrolArrivedTime = 0,
+    LastCompletionMessageTime = 0, QuestStartTime = 0, FruitPriorityActive = false,
+    LastFruitPickupTime = 0, IsTransitioningDimension = false,
+    LastDimensionTransition = 0, IsChestTweening = false, OriginalWalkSpeed = nil,
+    OriginalJumpPower = nil, LastProgressSnapshot = nil, HighSpeedWatcherConn = nil,
+    LastQuestTitleSaved = nil, LastKnownProgress = nil, WasFramePresent = false,
+    QuestJustCompleted = false, FastAttackTarget = nil, WalkBodyVelocity = nil,
+    StatsRotationIndex = 1, StatsRemainders = {}, StatsLocked = false,
+    LockedQuestTitle = nil, PatrolIndex = 1, PatrolLastSwitch = 0,
+    PatrolTargetMob = nil, NoFallAntiGravity = nil, UnderwaterTransitionActive = false,
+    SavedFarmState = nil, ResumeFarmAfterToggle = false, UnderwaterEntryLock = false,
+    Descending = false, DescentTargetY = nil,
+    LastHorizontalVelocity = Vector3.zero, CachedSpinnerCloseBtn = nil,
+    BossPatrolIndex = 1, BossPatrolLastSwitch = 0, BossKillCheckTarget = nil,
+    WasFarmingBoss = false, DiagonalFlightActive = false,
+    FruitCollectFlightSession = 0, FruitCollectTargetObject = nil,
+    FishmanLordState = "IDLE", FishmanLordTransitionLock = false,
+    BossArrivalSettleTime = 0, SkyIslandFlightLock = false,
+    LastBossFlyStartTime = 0, LastBossDistance = math.huge,
+    ShipTransitionLock = false, ShipState = "IDLE", WasFarmingShip = false,
+    SkillCastLock = false, SkillCastEndTime = 0,
+    FactoryLockedAtFactory = false, FactoryLockedPosition = nil,
+    FactoryHovering = false, FactoryTarget = nil, FactoryCoreDead = false,
+    FactoryLastDisplayedTime = "", FactoryLastDisplayedColor = nil,
+    FactoryStatus = "idle", FactoryRaidActive = false, FactoryCoreAlive = false,
+    MobSweepMem = {}, MobSweepIndex = 1, MobSweepLastSwitch = 0,
+};
+
+local function cacheCharParts()
+    State.CachedCharacterParts = {};
+    pcall(function()
+        local char = plr.Character;
+        if char then
+            for _, p in ipairs(char:GetChildren()) do
+                if p:IsA("BasePart") then table.insert(State.CachedCharacterParts, p) end;
+            end;
+        end;
+    end);
+end;
+
+pcall(function() plr.CharacterAdded:Connect(function() task.wait(0.5) cacheCharParts() end) end);
+task.spawn(function() task.wait(1) cacheCharParts() end);
+
+BLOX_FRUIT_ID_MAP = {
+    ["rocket fruit"] = "Rocket-Rocket", ["rocket"] = "Rocket-Rocket", ["spin fruit"] = "Spin-Spin", ["spin"] = "Spin-Spin",
+    ["blade fruit"] = "Blade-Blade", ["blade"] = "Blade-Blade", ["spring fruit"] = "Spring-Spring", ["spring"] = "Spring-Spring",
+    ["bomb fruit"] = "Bomb-Bomb", ["bomb"] = "Bomb-Bomb", ["smoke fruit"] = "Smoke-Smoke", ["smoke"] = "Smoke-Smoke",
+    ["spike fruit"] = "Spike-Spike", ["spike"] = "Spike-Spike", ["flame fruit"] = "Flame-Flame", ["flame"] = "Flame-Flame",
+    ["ice fruit"] = "Ice-Ice", ["ice"] = "Ice-Ice", ["sand fruit"] = "Sand-Sand", ["sand"] = "Sand-Sand",
+    ["dark fruit"] = "Dark-Dark", ["dark"] = "Dark-Dark", ["eagle fruit"] = "Eagle-Eagle", ["eagle"] = "Eagle-Eagle",
+    ["diamond fruit"] = "Diamond-Diamond", ["diamond"] = "Diamond-Diamond", ["light fruit"] = "Light-Light", ["light"] = "Light-Light",
+    ["rubber fruit"] = "Rubber-Rubber", ["rubber"] = "Rubber-Rubber", ["ghost fruit"] = "Ghost-Ghost", ["ghost"] = "Ghost-Ghost",
+    ["magma fruit"] = "Magma-Magma", ["magma"] = "Magma-Magma", ["quake fruit"] = "Quake-Quake", ["quake"] = "Quake-Quake",
+    ["buddha fruit"] = "Buddha-Buddha", ["buddha"] = "Buddha-Buddha", ["love fruit"] = "Love-Love", ["love"] = "Love-Love",
+    ["creation fruit"] = "Creation-Creation", ["creation"] = "Creation-Creation", ["spider fruit"] = "Spider-Spider", ["spider"] = "Spider-Spider",
+    ["sound fruit"] = "Sound-Sound", ["sound"] = "Sound-Sound", ["phoenix fruit"] = "Phoenix-Phoenix", ["phoenix"] = "Phoenix-Phoenix",
+    ["portal fruit"] = "Portal-Portal", ["portal"] = "Portal-Portal", ["lightning fruit"] = "Lightning-Lightning", ["lightning"] = "Lightning-Lightning",
+    ["blizzard fruit"] = "Blizzard-Blizzard", ["blizzard"] = "Blizzard-Blizzard", ["gravity fruit"] = "Gravity-Gravity", ["gravity"] = "Gravity-Gravity",
+    ["mammoth fruit"] = "Mammoth-Mammoth", ["mammoth"] = "Mammoth-Mammoth", ["t-rex fruit"] = "T-Rex-T-Rex", ["t-rex"] = "T-Rex-T-Rex",
+    ["dough fruit"] = "Dough-Dough", ["dough"] = "Dough-Dough", ["shadow fruit"] = "Shadow-Shadow", ["shadow"] = "Shadow-Shadow",
+    ["venom fruit"] = "Venom-Venom", ["venom"] = "Venom-Venom", ["control fruit"] = "Control-Control", ["control"] = "Control-Control",
+    ["spirit fruit"] = "Spirit-Spirit", ["spirit"] = "Spirit-Spirit", ["gas fruit"] = "Gas-Gas", ["gas"] = "Gas-Gas",
+    ["yeti fruit"] = "Yeti-Yeti", ["yeti"] = "Yeti-Yeti", ["tiger fruit"] = "Tiger-Tiger", ["tiger"] = "Tiger-Tiger",
+    ["magnet fruit"] = "Magnet-Magnet", ["magnet"] = "Magnet-Magnet", ["kitsune fruit"] = "Kitsune-Kitsune", ["kitsune"] = "Kitsune-Kitsune",
+    ["dragon fruit"] = "Dragon-Dragon", ["dragon"] = "Dragon-Dragon"
+};
 
 local CT_CONFIG = {
-    heightAboveChest = 5, tweenSpeed = 170, minTweenTime = 0.12,
+    heightAboveChest = 2, tweenSpeed = 170, minTweenTime = 0.12,
     maxDistance = 5000, waitAtChest = 0.05, landToOpen = false,
     sortByDistance = true, loopForever = true, cycleDelay = 1,
     freefallState = true, freezeVelocity = true, flatLook = true,
     sweepWhenEmpty = true, sweepPause = 0.25, sweepMaxDistance = 8000,
     sweepMaxSpots = 60,
+};
+
+local MOB_SWEEP_CONFIG = {
+    pause = 0.35,
+    maxSpots = 40,
+    activationDelay = 0.6,
+    arrivalRadius = 8,
 };
 
 local CT_SHARED = getgenv().__ChestTweenShared;
@@ -36,7 +485,6 @@ local CT_STOP = { flag = false };
 CT_SHARED.stop = CT_STOP;
 local function ctIsCurrent() return CT_SHARED.generation == CT_GEN end;
 table.insert(CT_SHARED.stops, function() CT_STOP.flag = true end);
-local function ctRegisterGuard(conn) table.insert(CT_SHARED.guards, conn) return conn end;
 
 local CT_ALLOWED = {
     Chest1 = { label = "Silver Chest" }, Chest2 = { label = "Gold Chest" },
@@ -81,176 +529,38 @@ local function ctSortChests(list)
     local hrp = ctGetHRP();
     if not hrp then return list end;
     table.sort(list, function(a, b)
-        return (a.Position - hrp.Position).Magnitude < (b.Position - hrp.Position).Magnitude;
+        local distA = (a.Position - hrp.Position).Magnitude;
+        local distB = (b.Position - hrp.Position).Magnitude;
+        return distA < distB;
     end);
     return list;
 end;
 
 local ctFlying = false;
-local ctFlight = { active = false, animator = nil, frozen = {}, prev = nil, hold = nil, landing = false };
-
-local function ctIsWalkTrack(t)
-    local n = t.Name:lower();
-    return n == "animation1" or n:find("walk", 1, true) ~= nil or n:find("run", 1, true) ~= nil or n:find("jog", 1, true) ~= nil;
-end;
-
-local function ctFreezeWalk()
-    if not ctFlight.animator then return end;
-    pcall(function()
-        for _, t in ipairs(ctFlight.animator:GetPlayingAnimationTracks()) do
-            if ctIsWalkTrack(t) then
-                if not ctFlight.frozen[t] then
-                    ctFlight.frozen[t] = { speed = t.Speed, weight = t.WeightCurrent };
-                end;
-                if t.Speed ~= 0 then t:AdjustSpeed(0) end;
-                if t.WeightCurrent > 0 then t:AdjustWeight(0, 0) end;
-            end;
-        end;
-    end);
-end;
-
-local function ctRestoreWalk()
-    if not ctFlight.animator then return end;
-    pcall(function()
-        for t, saved in pairs(ctFlight.frozen) do
-            if t.Parent ~= nil then
-                t:AdjustSpeed(saved.speed ~= 0 and saved.speed or 1);
-                t:AdjustWeight(saved.weight > 0 and saved.weight or 1, 0);
-            end;
-        end;
-    end);
-    ctFlight.frozen = {};
-end;
-
-local function ctFlightGuard(step)
-    if not ctFlight.active then return end;
-    local hrp = ctGetHRP();
-    local hum = ctGetHum();
-    if not hrp or not hum then return end;
-    ctFreezeWalk();
-    if CT_CONFIG.freefallState then
-        if hum.PlatformStand then hum.PlatformStand = false end;
-        if hum:GetState() ~= Enum.HumanoidStateType.Freefall then
-            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Freefall) end);
-        end;
-    end;
-    if workspace.Gravity ~= 0 and not ctFlight.landing then workspace.Gravity = 0 end;
-    if CT_CONFIG.freezeVelocity and not ctFlight.landing then
-        if hrp.AssemblyLinearVelocity.Magnitude > 0.01 then hrp.AssemblyLinearVelocity = Vector3.zero end;
-        if hrp.AssemblyAngularVelocity.Magnitude > 0.01 then hrp.AssemblyAngularVelocity = Vector3.zero end;
-    end;
-    if ctFlight.hold and not ctFlight.landing then
-        if not hrp.Anchored then hrp.Anchored = true end;
-        hrp.CFrame = ctFlight.hold;
-    elseif not ctFlight.landing then
-        if hrp.Anchored then hrp.Anchored = false end;
-    end;
-end;
-
-local ctRenderGuard = nil;
-local function ctStartGuard()
-    if ctRenderGuard then return end;
-    ctRenderGuard = ctRegisterGuard(RunService.RenderStepped:Connect(function(dt)
-        if not ctIsCurrent() then
-            if ctRenderGuard then ctRenderGuard:Disconnect(); ctRenderGuard = nil end;
-            return;
-        end;
-        if ctFlight.active then ctFlightGuard(dt) end;
-    end));
-end;
-
-local function ctStopGuard()
-    if ctRenderGuard then ctRenderGuard:Disconnect(); ctRenderGuard = nil end;
-end;
-
-local function ctBeginFlight()
-    if ctFlight.active then return true end;
-    local hrp = ctGetHRP(); local hum = ctGetHum();
-    if not hrp or not hum then return false end;
-    ctFlight.prev = {
-        anchored = hrp.Anchored, gravity = workspace.Gravity,
-        platform = hum.PlatformStand, walkSpeed = hum.WalkSpeed, autoRotate = hum.AutoRotate,
-    };
-    hum.AutoRotate = false; hum.WalkSpeed = 0; workspace.Gravity = 0;
-    if hum.PlatformStand then hum.PlatformStand = false end;
-    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Freefall) end);
-    ctFlight.animator = hum:FindFirstChildOfClass("Animator");
-    ctFlight.frozen = {};
-    ctFreezeWalk();
-    ctStartGuard();
-    ctFlight.active = true;
-    return true;
-end;
-
-local function ctEndFlight()
-    if not ctFlight.active then return end;
-    local hrp = ctGetHRP(); local hum = ctGetHum(); local prev = ctFlight.prev;
-    if prev then
-        workspace.Gravity = prev.gravity;
-        if hrp then hrp.Anchored = prev.anchored end;
-        if hum then
-            hum.PlatformStand = prev.platform;
-            hum.WalkSpeed = prev.walkSpeed;
-            hum.AutoRotate = prev.autoRotate;
-        end;
-    end;
-    ctRestoreWalk();
-    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end) end;
-    ctFlight.active = false; ctFlight.animator = nil; ctFlight.frozen = {};
-    ctFlight.prev = nil; ctFlight.hold = nil;
-    ctStopGuard();
-end;
 
 local function ctFlyTo(position)
-    local hrp = ctGetHRP(); local hum = ctGetHum();
-    if not hrp or not hum then return false end;
-    if ctFlying then return false end;
-    if CT_STOP.flag then return false end;
-    ctFlying = true;
+    local char, hrp = getChar()
+    if not char or not hrp then return false end
+    if ctFlying then return false end
+    if CT_STOP.flag then return false end
+
+    ctFlying = true
     local ok = pcall(function()
-        if not ctBeginFlight() then return end;
-        local startCFrame = hrp.CFrame;
-        local goalCFrame = CFrame.new(position);
-        local dist = (goalCFrame.Position - startCFrame.Position).Magnitude;
-        local duration = math.max(CT_CONFIG.minTweenTime, dist / CT_CONFIG.tweenSpeed);
-        local useFlat = CT_CONFIG.flatLook ~= false;
-        local flatDir = goalCFrame.Position - startCFrame.Position;
-        flatDir = Vector3.new(flatDir.X, 0, flatDir.Z);
-        if flatDir.Magnitude < 0.01 then
-            flatDir = startCFrame.LookVector;
-            flatDir = Vector3.new(flatDir.X, 0, flatDir.Z);
-        end;
-        flatDir = flatDir.Unit;
-        local alpha = 0;
-        ctFlight.hold = nil;
-        local stateGuard = RunService.Heartbeat:Connect(function(step)
-            if not ctIsCurrent() then stateGuard:Disconnect(); return end;
-            alpha = math.min(alpha + step / duration, 1);
-            local newPos = startCFrame.Position:Lerp(goalCFrame.Position, alpha);
-            if useFlat then
-                hrp.CFrame = CFrame.lookAt(newPos, newPos + flatDir);
-            else
-                hrp.CFrame = CFrame.new(newPos, newPos + (goalCFrame.Position - startCFrame.Position).Unit);
-            end;
-            ctFlightGuard(step);
-        end);
-        local deadline = os.clock() + duration + 2;
-        while alpha < 1 and os.clock() < deadline and not CT_STOP.flag and ctIsCurrent() do
-            RunService.Heartbeat:Wait();
-        end;
-        stateGuard:Disconnect();
-        local finalCF;
-        if useFlat then
-            finalCF = CFrame.lookAt(goalCFrame.Position, goalCFrame.Position + flatDir);
-        else
-            finalCF = CFrame.new(goalCFrame.Position);
-        end;
-        hrp.CFrame = finalCF;
-        ctFlight.hold = finalCF;
-    end);
-    ctFlying = false;
-    return ok;
-end;
+        if not startFlight() then return end
+        local t0 = tick()
+        while not CT_STOP.flag and ctIsCurrent() do
+            local hrp2 = ctGetHRP()
+            if not hrp2 then break end
+            local dist = (position - hrp2.Position).Magnitude
+            if dist <= 2 then break end
+            if tick() - t0 > 30 then break end
+            moveToTarget(CFrame.new(position))
+            task.wait(0.03)
+        end
+    end)
+    ctFlying = false
+    return ok
+end
 
 local function ctLandingPos(chest)
     return chest.Position + Vector3.new(0, CT_CONFIG.heightAboveChest, 0);
@@ -259,8 +569,8 @@ end;
 local ctSweepMem = {};
 local function ctRememberSpot(pos)
     for _, p in ipairs(ctSweepMem) do
-        if (p.pos - pos).Magnitude < 40 then return end;
-    end;
+        if (p.pos - pos).Magnitude < 40 then return end
+    end
     if #ctSweepMem < CT_CONFIG.sweepMaxSpots then table.insert(ctSweepMem, { pos = pos }) end;
 end;
 
@@ -284,36 +594,50 @@ local function ctRunChests()
     if ctRunLock then return end;
     ctRunLock = true;
     repeat
-        local list = ctGetAllChests();
-        local queue = {};
-        for _, c in ipairs(list) do table.insert(queue, c) end;
-        ctRememberChests(list);
-        if CT_CONFIG.sortByDistance then ctSortChests(queue) end;
-        for _, chest in ipairs(queue) do
-            if CT_STOP.flag then break end;
-            if not ctIsValidChest(chest) then continue end;
-            local hrpNow = ctGetHRP();
-            if not hrpNow then break end;
-            if CT_CONFIG.maxDistance and (chest.Position - hrpNow.Position).Magnitude > CT_CONFIG.maxDistance then continue end;
-            ctFlyTo(ctLandingPos(chest));
-            task.wait(CT_CONFIG.waitAtChest);
-        end;
-        if not ctHasChestInRange() and CT_CONFIG.sweepWhenEmpty and #ctSweepMem > 0 and not CT_STOP.flag then
-            local idx = 1;
-            local sweepRange = CT_CONFIG.sweepMaxDistance or CT_CONFIG.maxDistance or 8000;
-            while not ctHasChestInRange() and CT_CONFIG.sweepWhenEmpty and not CT_STOP.flag and ctIsCurrent() do
-                local spot = ctSweepMem[idx];
-                if not spot then idx = 1; spot = ctSweepMem[1] end;
-                local hrp2 = ctGetHRP();
-                if not hrp2 then break end;
-                if (spot.pos - hrp2.Position).Magnitude <= sweepRange then ctFlyTo(spot.pos) end;
-                task.wait(CT_CONFIG.sweepPause or 0.2);
-                idx = idx + 1;
+        local skipCycle = false;
+        if (Cfg.AutoFarmFactory and State.FactoryCoreAlive) or (Cfg.AutoCollectFruit and State.FruitPriorityActive) then
+            task.wait(0.5);
+            skipCycle = true;
+        end
+        if not skipCycle then
+            local list = ctGetAllChests();
+            local queue = {};
+            for _, c in ipairs(list) do table.insert(queue, c) end;
+            ctRememberChests(list);
+            if CT_CONFIG.sortByDistance then ctSortChests(queue) end;
+
+            for _, chest in ipairs(queue) do
+                if CT_STOP.flag then break end;
+                if (Cfg.AutoFarmFactory and State.FactoryCoreAlive) or (Cfg.AutoCollectFruit and State.FruitPriorityActive) then break end
+
+                if ctIsValidChest(chest) then
+                    local hrpNow = ctGetHRP();
+                    if not hrpNow then break end;
+                    if not CT_CONFIG.maxDistance or (chest.Position - hrpNow.Position).Magnitude <= CT_CONFIG.maxDistance then
+                        ctFlyTo(ctLandingPos(chest));
+                        task.wait(CT_CONFIG.waitAtChest);
+                    end
+                end
+            end
+
+            if not ctHasChestInRange() and CT_CONFIG.sweepWhenEmpty and #ctSweepMem > 0 and not CT_STOP.flag then
+                local idx = 1;
+                local sweepRange = CT_CONFIG.sweepMaxDistance or CT_CONFIG.maxDistance or 8000;
+                while not ctHasChestInRange() and CT_CONFIG.sweepWhenEmpty and not CT_STOP.flag and ctIsCurrent() do
+                    if (Cfg.AutoFarmFactory and State.FactoryCoreAlive) or (Cfg.AutoCollectFruit and State.FruitPriorityActive) then break end
+                    local spot = ctSweepMem[idx];
+                    if not spot then idx = 1; spot = ctSweepMem[1] end;
+                    local hrp2 = ctGetHRP();
+                    if not hrp2 then break end;
+                    if (spot.pos - hrp2.Position).Magnitude <= sweepRange then ctFlyTo(spot.pos) end;
+                    task.wait(CT_CONFIG.sweepPause or 0.2);
+                    idx = idx + 1;
+                end;
             end;
-        end;
+        end
         if CT_CONFIG.loopForever and not CT_STOP.flag then task.wait(CT_CONFIG.cycleDelay or 1) end;
     until not CT_CONFIG.loopForever or CT_STOP.flag or not ctIsCurrent();
-    pcall(ctEndFlight);
+    stopAllMovement();
     ctRunLock = false;
     CT_STOP.flag = false;
 end;
@@ -325,149 +649,80 @@ getgenv().ChestTween = {
         task.spawn(function()
             local t0 = os.clock();
             while ctFlying and os.clock() - t0 < 3 do task.wait(0.05) end;
-            pcall(ctEndFlight);
+            task.wait(0.3);
+            stopAllMovement();
             ctRunLock = false;
         end);
     end,
     config = CT_CONFIG,
     _debug = function()
-        return { flying = ctFlying, stopFlag = CT_STOP.flag, flightActive = ctFlight.active,
+        return { flying = ctFlying, stopFlag = CT_STOP.flag, flightActive = Flight.active,
             runLock = ctRunLock, hasHRP = ctGetHRP() ~= nil, hasHum = ctGetHum() ~= nil }
     end,
     _reset = function()
         ctFlying = false; CT_STOP.flag = false; ctRunLock = false;
-        pcall(ctEndFlight);
+        stopAllMovement();
     end,
 };
 
-local function validNum(n)
-    return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge;
-end;
+local function anyOtherFlightUser(exclude)
+    if exclude ~= "level"    and Cfg.AutoFarmLevel then return true end
+    if exclude ~= "nearest"  and Cfg.AutoFarmNearest then return true end
+    if exclude ~= "chest"    and Cfg.AutoChestTween then return true end
+    if exclude ~= "teleport" and Cfg.AutoTeleportIsland then return true end
+    if exclude ~= "factory"  and Cfg.AutoFarmFactory and State.FactoryCoreAlive then return true end
+    if exclude ~= "fruit"    and Cfg.AutoCollectFruit and State.FruitPriorityActive then return true end
+    return false
+end
+local function mobSweepRemember(pos)
+    if not pos then return end
+    for _, p in ipairs(State.MobSweepMem) do
+        if (p.pos - pos).Magnitude < 25 then return end
+    end
+    if #State.MobSweepMem < MOB_SWEEP_CONFIG.maxSpots then
+        table.insert(State.MobSweepMem, { pos = pos, t = tick() })
+    end
+end
 
-pcall(function()
-    local lt = game:GetService("Lighting");
-    lt.GlobalShadows = false;
-    lt.FogEnd = 9e9;
-    for _, o in ipairs(lt:GetChildren()) do
-        if o:IsA("PostEffect") or o:IsA("Atmosphere") or o:IsA("Sky") then o.Enabled = false end;
-    end;
-    local terr = workspace:FindFirstChildOfClass("Terrain");
-    if terr then
-        terr.WaterWaveSize = 0;
-        terr.WaterWaveSpeed = 0;
-    end;
-end);
+local function mobSweepRememberCF(cf)
+    if not cf then return end
+    local p
+    if typeof(cf) == "CFrame" then p = cf.Position
+    elseif typeof(cf) == "Vector3" then p = cf
+    else return end
+    mobSweepRemember(p)
+end
 
-if not _G.__ihooked then
-    pcall(function()
-        _G.__ihooked = true;
-        local Notification = require(RS.Notification);
-        local orig = Notification.new;
-        Notification.new = function(msg, ...)
-            local low = tostring(msg):lower();
-            if low:find("store") and low:find("blox fruit") then
-                return { Display = function() end, Dead = function() return true end };
-            end;
-            return orig(msg, ...);
-        end;
-    end);
-end;
+local function mobSweepClear()
+    State.MobSweepMem = {}
+    State.MobSweepIndex = 1
+    State.MobSweepLastSwitch = 0
+end
 
-plr.Idled:Connect(function()
-    pcall(function()
-        VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
-        task.wait(0.2);
-        VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
-    end);
-end);
-
-task.spawn(function()
-    while true do
-        task.wait(480);
-        pcall(function()
-            VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
-            task.wait(0.1);
-            VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame);
-        end);
-    end;
-end);
-
-Cfg = {
-    AutoFarmLevel = false, AutoFarmNearest = false, AutoChestTween = false,
-    AutoSecondSeaQuest = false, StopWhenGetItemInChest = true,
-    AutoCollectFruit = false, AutoStoreFruit = false, AutoRandomFruit = false,
-    AutoStats = false, AutoStatsMelee = false, AutoStatsDefense = false,
-    AutoStatsGun = false, AutoStatsSword = false, AutoStatsFruit = false,
-    StatPointStep = 3, AutoTeleportIsland = false,
-    SelectedIslandCFrame = nil, SelectedIslandName = nil, TeleportFlightThread = nil,
-    SelectedWeapon = "Melee", FlySpeed = 170, AttackDelay = 0.01,
-    AutoBuso = true, AttackAuraAlways = true, SafeDistance = Vector3.new(0, 10, 0),
-    FruitESPEnabled = true, PlayerESPEnabled = true, ESPShowDistance = true,
-    PlayerMovementEnabled = false, WalkSpeedValue = 16, JumpPowerValue = 50,
-    SelectedSea1Boss = "The Gorilla King", AutoFarmBosses = false,
-};
-
-State = {
-    QuestState = "IDLE", QuestCooldown = 0, CurrentQuestData = nil,
-    LastAttack = 0, LastM1Time = 0, LastBuso = 0, CurrentTargetMob = nil,
-    BodyVelocity = nil, BodyGyro = nil, IsMoving = false, IsHoveringAtTarget = false,
-    IsCollectingFruitMoving = false, LastVelocityMagnitude = 0, Connections = {},
-    CachedCharacterParts = {}, IsScriptDestroyed = false, ActiveESPItems = {},
-    FrozenPositions = {}, FruitStoreCooldown = {}, ChestRegistry = {},
-    CollectedChests = {}, IgnoredGroundFruits = {}, GroundFruitTouchAttempts = {},
-    IsStoringFruitActive = false, CurrentPatrolIndex = 1, PatrolArrivedTime = 0,
-    LastCompletionMessageTime = 0, QuestStartTime = 0, FruitPriorityActive = false,
-    LastFruitPickupTime = 0, IsTransitioningDimension = false,
-    LastDimensionTransition = 0, IsChestTweening = false, OriginalWalkSpeed = nil,
-    OriginalJumpPower = nil, LastProgressSnapshot = nil, HighSpeedWatcherConn = nil,
-    LastQuestTitleSaved = nil, LastKnownProgress = nil, WasFramePresent = false,
-    QuestJustCompleted = false, FastAttackTarget = nil, WalkBodyVelocity = nil,
-    StatsRotationIndex = 1, StatsRemainders = {}, StatsLocked = false,
-    LockedQuestTitle = nil, PatrolIndex = 1, PatrolLastSwitch = 0,
-    PatrolTargetMob = nil, NoFallAntiGravity = nil, UnderwaterTransitionActive = false,
-    SavedFarmState = nil, ResumeFarmAfterToggle = false, UnderwaterEntryLock = false,
-    MobHealthTracker = {}, IgnoredInvincibleMobs = {}, InvincibleCheckInterval = 0.25,
-    InvincibleNoDamageThreshold = 4, Descending = false, DescentTargetY = nil,
-    LastHorizontalVelocity = Vector3.zero, CachedSpinnerCloseBtn = nil,
-    BossPatrolIndex = 1, BossPatrolLastSwitch = 0, BossKillCheckTarget = nil,
-    WasFarmingBoss = false, DiagonalFlightActive = false,
-    FruitCollectFlightSession = 0, FruitCollectTargetObject = nil,
-    FishmanLordState = "IDLE", FishmanLordTransitionLock = false,
-    BossArrivalSettleTime = 0, SkyIslandFlightLock = false,
-    LastBossFlyStartTime = 0, LastBossDistance = math.huge,
-    ShipTransitionLock = false, ShipState = "IDLE", WasFarmingShip = false,
-    SkillCastLock = false, SkillCastEndTime = 0,
-};
-
-BLOX_FRUIT_ID_MAP = {
-    ["rocket fruit"] = "Rocket-Rocket", ["rocket"] = "Rocket-Rocket", ["spin fruit"] = "Spin-Spin", ["spin"] = "Spin-Spin",
-    ["blade fruit"] = "Blade-Blade", ["blade"] = "Blade-Blade", ["spring fruit"] = "Spring-Spring", ["spring"] = "Spring-Spring",
-    ["bomb fruit"] = "Bomb-Bomb", ["bomb"] = "Bomb-Bomb", ["smoke fruit"] = "Smoke-Smoke", ["smoke"] = "Smoke-Smoke",
-    ["spike fruit"] = "Spike-Spike", ["spike"] = "Spike-Spike", ["flame fruit"] = "Flame-Flame", ["flame"] = "Flame-Flame",
-    ["ice fruit"] = "Ice-Ice", ["ice"] = "Ice-Ice", ["sand fruit"] = "Sand-Sand", ["sand"] = "Sand-Sand",
-    ["dark fruit"] = "Dark-Dark", ["dark"] = "Dark-Dark", ["eagle fruit"] = "Eagle-Eagle", ["eagle"] = "Eagle-Eagle",
-    ["diamond fruit"] = "Diamond-Diamond", ["diamond"] = "Diamond-Diamond", ["light fruit"] = "Light-Light", ["light"] = "Light-Light",
-    ["rubber fruit"] = "Rubber-Rubber", ["rubber"] = "Rubber-Rubber", ["ghost fruit"] = "Ghost-Ghost", ["ghost"] = "Ghost-Ghost",
-    ["magma fruit"] = "Magma-Magma", ["magma"] = "Magma-Magma", ["quake fruit"] = "Quake-Quake", ["quake"] = "Quake-Quake",
-    ["buddha fruit"] = "Buddha-Buddha", ["buddha"] = "Buddha-Buddha", ["love fruit"] = "Love-Love", ["love"] = "Love-Love",
-    ["creation fruit"] = "Creation-Creation", ["creation"] = "Creation-Creation", ["spider fruit"] = "Spider-Spider", ["spider"] = "Spider-Spider",
-    ["sound fruit"] = "Sound-Sound", ["sound"] = "Sound-Sound", ["phoenix fruit"] = "Phoenix-Phoenix", ["phoenix"] = "Phoenix-Phoenix",
-    ["portal fruit"] = "Portal-Portal", ["portal"] = "Portal-Portal", ["lightning fruit"] = "Lightning-Lightning", ["lightning"] = "Lightning-Lightning",
-    ["blizzard fruit"] = "Blizzard-Blizzard", ["blizzard"] = "Blizzard-Blizzard", ["gravity fruit"] = "Gravity-Gravity", ["gravity"] = "Gravity-Gravity",
-    ["mammoth fruit"] = "Mammoth-Mammoth", ["mammoth"] = "Mammoth-Mammoth", ["t-rex fruit"] = "T-Rex-T-Rex", ["t-rex"] = "T-Rex-T-Rex",
-    ["dough fruit"] = "Dough-Dough", ["dough"] = "Dough-Dough", ["shadow fruit"] = "Shadow-Shadow", ["shadow"] = "Shadow-Shadow",
-    ["venom fruit"] = "Venom-Venom", ["venom"] = "Venom-Venom", ["control fruit"] = "Control-Control", ["control"] = "Control-Control",
-    ["spirit fruit"] = "Spirit-Spirit", ["spirit"] = "Spirit-Spirit", ["gas fruit"] = "Gas-Gas", ["gas"] = "Gas-Gas",
-    ["yeti fruit"] = "Yeti-Yeti", ["yeti"] = "Yeti-Yeti", ["tiger fruit"] = "Tiger-Tiger", ["tiger"] = "Tiger-Tiger",
-    ["magnet fruit"] = "Magnet-Magnet", ["magnet"] = "Magnet-Magnet", ["kitsune fruit"] = "Kitsune-Kitsune", ["kitsune"] = "Kitsune-Kitsune",
-    ["dragon fruit"] = "Dragon-Dragon", ["dragon"] = "Dragon-Dragon"
-};
+local function mobSweepGetNextTarget()
+    if #State.MobSweepMem == 0 then return nil end
+    local now = tick()
+    if State.MobSweepIndex < 1 or State.MobSweepIndex > #State.MobSweepMem then
+        State.MobSweepIndex = 1
+    end
+    if State.MobSweepLastSwitch == 0 then
+        State.MobSweepLastSwitch = now
+    end
+    if now - State.MobSweepLastSwitch >= MOB_SWEEP_CONFIG.pause then
+        State.MobSweepIndex = State.MobSweepIndex + 1
+        if State.MobSweepIndex > #State.MobSweepMem then
+            State.MobSweepIndex = 1
+        end
+        State.MobSweepLastSwitch = now
+    end
+    return State.MobSweepMem[State.MobSweepIndex].pos
+end
 
 local function isCombatFruit(tool)
     if not tool or not tool:IsA("Tool") then return false end;
     if tool:FindFirstChild("Skills") or tool:FindFirstChild("Moves") or tool:FindFirstChild("Cooldown") or tool:FindFirstChild("SkillFrames") or tool:FindFirstChild("CombatScript") then return true end;
     return false;
-end;
+end
 
 local function isPhysicalFruit(tool)
     if not tool or not tool:IsA("Tool") then return false end;
@@ -809,88 +1064,6 @@ task.spawn(function()
     end;
 end);
 
-local function cacheCharParts()
-    State.CachedCharacterParts = {};
-    pcall(function()
-        local char = plr.Character;
-        if char then
-            for _, p in ipairs(char:GetChildren()) do
-                if p:IsA("BasePart") then table.insert(State.CachedCharacterParts, p) end;
-            end;
-        end;
-    end);
-end;
-
-pcall(function() plr.CharacterAdded:Connect(function() task.wait(0.5) cacheCharParts() end) end);
-cacheCharParts();
-
-local function ensureBodyMovers()
-    local char = plr.Character;
-    if not char then return nil end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    if not hrp then return nil end;
-    if not State.BodyVelocity or State.BodyVelocity.Parent ~= hrp then
-        if State.BodyVelocity then pcall(function() State.BodyVelocity:Destroy() end) end;
-        State.BodyVelocity = Instance.new("BodyVelocity");
-        State.BodyVelocity.Name = "Irish_BV";
-        State.BodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9);
-        State.BodyVelocity.Velocity = Vector3.zero;
-        State.BodyVelocity.Parent = hrp;
-    end;
-    if not State.BodyGyro or State.BodyGyro.Parent ~= hrp then
-        if State.BodyGyro then pcall(function() State.BodyGyro:Destroy() end) end;
-        State.BodyGyro = Instance.new("BodyGyro");
-        State.BodyGyro.Name = "Irish_BG";
-        State.BodyGyro.MaxTorque = Vector3.new(0, 9e9, 0);
-        State.BodyGyro.P = 1e4;
-        State.BodyGyro.D = 1000;
-        State.BodyGyro.CFrame = CFrame.new(hrp.Position) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0);
-        State.BodyGyro.Parent = hrp;
-    end;
-    if hum and hum.Health > 0 then
-        pcall(function()
-            hum.PlatformStand = false;
-            hum.AutoRotate = false;
-            hum:SetStateEnabled(Enum.HumanoidStateType.Running, false);
-            hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, false);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Landed, false);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true);
-            if hum:GetState() ~= Enum.HumanoidStateType.Freefall then hum:ChangeState(Enum.HumanoidStateType.Freefall) end;
-        end);
-    end;
-    return State.BodyVelocity;
-end;
-
-local function startAntiGrav()
-    local char = plr.Character;
-    if not char then return end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    if not hrp then return end;
-    if State.NoFallAntiGravity and State.NoFallAntiGravity.Parent == hrp then return end;
-    if State.NoFallAntiGravity then pcall(function() State.NoFallAntiGravity:Destroy() end) end;
-    State.NoFallAntiGravity = Instance.new("BodyForce");
-    State.NoFallAntiGravity.Name = "Irish_AntiGravity";
-    State.NoFallAntiGravity.Force = Vector3.new(0, workspace.Gravity * 3.0, 0);
-    State.NoFallAntiGravity.Parent = hrp;
-end;
-
-local function stopAntiGrav()
-    if State.NoFallAntiGravity then
-        pcall(function() State.NoFallAntiGravity:Destroy() end);
-        State.NoFallAntiGravity = nil;
-    end;
-end;
-
-task.spawn(function()
-    while not State.IsScriptDestroyed do
-        task.wait(0.1);
-        if State.IsMoving and State.BodyVelocity and State.BodyVelocity.Parent then startAntiGrav();
-        elseif not State.IsMoving then stopAntiGrav() end;
-    end;
-end);
-
 FROZEN_TAG = "_IrishFrozen";
 
 local function saveOrigPart(part)
@@ -1026,353 +1199,10 @@ task.spawn(function()
     end;
 end);
 
-local function restoreCharCollisions(char)
-    if not char then return end;
-    pcall(function()
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then
-                local n = p.Name;
-                if n == "UpperTorso" or n == "LowerTorso" or n == "Torso" or n == "Head" then p.CanCollide = true else p.CanCollide = false end;
-                p.CanTouch = true; p.CanQuery = true;
-            end;
-        end;
-    end);
-end;
-
-local function removePlatformBeneath()
-    pcall(function()
-        local char = plr.Character;
-        if char then
-            for _, o in ipairs(char:GetChildren()) do
-                if o.Name == "Platform" or o.Name == "Irish_Platform" or (o:IsA("BasePart") and o.Name:lower():find("platform")) then pcall(function() o:Destroy() end) end;
-            end;
-        end;
-        for _, o in ipairs(Workspace:GetChildren()) do
-            if o.Name == "Platform" or o.Name == "Irish_Platform" or (o:IsA("BasePart") and o.Name:lower():find("platform")) then pcall(function() o:Destroy() end) end;
-        end;
-    end);
-end;
-
 local function isMovementActive()
     if State.FruitPriorityActive then return false end;
-    return Cfg.AutoFarmBosses or Cfg.AutoFarmLevel or Cfg.AutoFarmNearest or Cfg.AutoChestTween or (Cfg.AutoCollectFruit and State.IsCollectingFruitMoving) or Cfg.AutoTeleportIsland;
-end;
-
-local function isPlayerCastingSkill()
-    local char = plr.Character;
-    if not char then return false end;
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    if not hum then return false end;
-    local tool = char:FindFirstChildOfClass("Tool");
-    if tool and tool:IsA("Tool") then
-        local an = hum:FindFirstChildOfClass("Animator");
-        if an then
-            for _, t in ipairs(an:GetPlayingAnimationTracks()) do
-                local nm = "";
-                pcall(function() nm = (t.Animation and t.Animation.Name or ""):lower() end);
-                if nm:find("skill") or nm:find("attack") or nm:find("cast") or nm:find("move") or nm:find("special") then
-                    return true;
-                end;
-            end;
-        end;
-    end;
-    return false;
-end;
-
-local function isUsingFlightSkill()
-    local char = plr.Character;
-    if not char then return false end;
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    local tool = char:FindFirstChildOfClass("Tool");
-    if not hum then return false end;
-    if tool and isCombatFruit(tool) then return true end;
-    local state = hum:GetState();
-    if (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Physics) and not State.IsMoving and not State.BodyVelocity then return true end;
-    return false;
-end;
-
-local function straightenChar(char, hrp)
-    if not hrp then return end;
-    pcall(function()
-        local y = hrp.Orientation.Y;
-        hrp.CFrame = CFrame.new(hrp.Position) * CFrame.Angles(0, math.rad(y), 0);
-        hrp.AssemblyLinearVelocity = Vector3.zero;
-        hrp.AssemblyAngularVelocity = Vector3.zero;
-        hrp.Velocity = Vector3.zero;
-        hrp.RotVelocity = Vector3.zero;
-        local hum = char and char:FindFirstChildOfClass("Humanoid");
-        if hum and hum.Health > 0 and not State.IsMoving then
-            local rp = RaycastParams.new();
-            rp.FilterDescendantsInstances = {char};
-            rp.FilterType = RaycastFilterType.Exclude;
-            local hit = Workspace:Raycast(hrp.Position, Vector3.new(0, -10, 0), rp);
-            if hit and hit.Position then
-                local hip = (hum.HipHeight and hum.HipHeight > 0) and hum.HipHeight or 2.0;
-                local tY = hit.Position.Y + hip + (hrp.Size.Y / 2);
-                if math.abs(hrp.Position.Y - tY) < 4.5 then
-                    hrp.CFrame = CFrame.new(hrp.Position.X, tY, hrp.Position.Z) * CFrame.Angles(0, math.rad(y), 0);
-                end;
-            end;
-        end;
-    end);
-end;
-
-local function stopBodyMovers()
-    if isUsingFlightSkill() and not State.IsMoving then return end;
-    pcall(function()
-        State.IsMoving = false;
-        State.IsHoveringAtTarget = false;
-        State.LastVelocityMagnitude = 0;
-        State.Descending = false;
-        State.DescentTargetY = nil;
-        State.LastHorizontalVelocity = Vector3.zero;
-        State.DiagonalFlightActive = false;
-        stopAntiGrav();
-        if State.BodyVelocity then pcall(function() State.BodyVelocity:Destroy() end); State.BodyVelocity = nil end;
-        if State.BodyGyro then pcall(function() State.BodyGyro:Destroy() end); State.BodyGyro = nil end;
-        if State.WalkBodyVelocity then pcall(function() State.WalkBodyVelocity:Destroy() end); State.WalkBodyVelocity = nil end;
-        removePlatformBeneath();
-        local char = plr.Character;
-        if char then
-            local hrp = char:FindFirstChild("HumanoidRootPart");
-            local hum = char:FindFirstChildOfClass("Humanoid");
-            if hrp then
-                hrp.Anchored = false;
-                hrp.CanCollide = false;
-                for _, o in ipairs(hrp:GetChildren()) do
-                    if o.Name == "Irish_BV" or o.Name == "Irish_BG" or o.Name == "Irish_AntiGravity" then pcall(function() o:Destroy() end) end;
-                end;
-            end;
-            for _, o in ipairs(char:GetDescendants()) do
-                if o.Name == "Irish_BV" or o.Name == "Irish_BG" or o.Name == "Irish_AntiGravity" then pcall(function() o:Destroy() end) end;
-            end;
-            if hum and hum.Health > 0 then
-                pcall(function()
-                    hum.PlatformStand = false;
-                    hum.Sit = false;
-                    hum.AutoRotate = true;
-                    hum.WalkSpeed = 16;
-                    hum.JumpPower = 50;
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Running, true);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, true);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, true);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Landed, true);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true);
-                    local an = hum:FindFirstChildOfClass("Animator");
-                    if an then
-                        for _, t in ipairs(an:GetPlayingAnimationTracks()) do
-                            local nm = (t.Animation and t.Animation.Name:lower()) or "";
-                            if nm:find("fly") or nm:find("float") then pcall(function() t:Stop(0.1) end) end;
-                        end;
-                    end;
-                    hum:ChangeState(Enum.HumanoidStateType.Running);
-                end);
-            end;
-            straightenChar(char, hrp);
-            restoreCharCollisions(char);
-        end;
-    end);
-end;
-
-local function resetPhysics()
-    pcall(function()
-        State.IsHoveringAtTarget = false;
-        State.DiagonalFlightActive = false;
-        stopBodyMovers();
-        removePlatformBeneath();
-        clearAllFreezes();
-        local char = plr.Character;
-        if char then
-            local hrp = char:FindFirstChild("HumanoidRootPart");
-            pcall(function() plr.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom end);
-            straightenChar(char, hrp);
-            restoreCharCollisions(char);
-        end;
-    end);
-end;
-
-local function setCharNoclip(char)
-    if not char then return end;
-    pcall(function()
-        for _, o in ipairs(char:GetDescendants()) do
-            if o:IsA("BasePart") then
-                o.CanCollide = false;
-                o.CanTouch = true;
-                o.CanQuery = true;
-            end;
-        end;
-    end);
-end;
-
-local function initNoclip()
-    if State.Connections.Noclip then return end;
-    local wasFlying = false;
-    State.Connections.Noclip = RunService.Stepped:Connect(function()
-        if isPlayerCastingSkill() then
-            if wasFlying then
-                wasFlying = false;
-                if State.BodyGyro and State.BodyGyro.Parent then State.BodyGyro.MaxTorque = Vector3.zero end;
-            end;
-            return;
-        end;
-        if isUsingFlightSkill() then return end;
-        local char = plr.Character;
-        if not char then return end;
-        local hrp = char:FindFirstChild("HumanoidRootPart");
-        if not hrp then return end;
-        local hum = char:FindFirstChildOfClass("Humanoid");
-        local flying = (State.BodyVelocity ~= nil and State.BodyVelocity.Parent == hrp and (State.IsMoving or isMovementActive()));
-        if flying then
-            wasFlying = true;
-            setCharNoclip(char);
-            if hum and hum.Health > 0 then
-                hum.PlatformStand = false;
-                hum.AutoRotate = false;
-                pcall(function()
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Running, false);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, false);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Landed, false);
-                    hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true);
-                    if hum:GetState() ~= Enum.HumanoidStateType.Freefall then hum:ChangeState(Enum.HumanoidStateType.Freefall) end;
-                end);
-            end;
-        else
-            if wasFlying then
-                wasFlying = false;
-                if State.BodyGyro and State.BodyGyro.Parent == hrp then
-                    State.BodyGyro.MaxTorque = Vector3.zero;
-                    pcall(function() State.BodyGyro:Destroy() end);
-                    State.BodyGyro = nil;
-                end;
-                if hrp then straightenChar(char, hrp) end;
-                if hum and hum.Health > 0 then
-                    hum.PlatformStand = false;
-                    hum.AutoRotate = true;
-                    pcall(function()
-                        hum:SetStateEnabled(Enum.HumanoidStateType.Running, true);
-                        hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, true);
-                        hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true);
-                        hum:SetStateEnabled(Enum.HumanoidStateType.Landed, true);
-                        hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true);
-                        hum:ChangeState(Enum.HumanoidStateType.Running);
-                    end);
-                end;
-                restoreCharCollisions(char);
-            end;
-        end;
-    end);
-end;
-
-initNoclip();
-
-State.Connections.AntiLandAnim = RunService.Stepped:Connect(function()
-    if isPlayerCastingSkill() then return end;
-    if isUsingFlightSkill() then return end;
-    if not State.IsMoving and not isMovementActive() then return end;
-    local char = plr.Character;
-    if not char then return end;
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    if not hum or hum.Health <= 0 then return end;
-    local an = hum:FindFirstChildOfClass("Animator");
-    if an then
-        for _, t in ipairs(an:GetPlayingAnimationTracks()) do
-            local nm = "";
-            pcall(function() nm = (t.Animation and t.Animation.Name or ""):lower() end);
-            if nm:find("land") or nm:find("impact") then pcall(function() t:Stop(0) end) end;
-        end;
-    end;
-end);
-
-State.Connections.AntiJitter = RunService.RenderStepped:Connect(function()
-    if not State.IsMoving and not isMovementActive() then
-        local char = plr.Character;
-        if char then
-            local hrp = char:FindFirstChild("HumanoidRootPart");
-            if hrp then
-                local bg = hrp:FindFirstChild("Irish_BG");
-                local bv = hrp:FindFirstChild("Irish_BV");
-                if bg or bv then
-                    pcall(function() if bg then bg:Destroy() end; if bv then bv:Destroy() end end);
-                    State.BodyVelocity = nil;
-                    State.BodyGyro = nil;
-                end;
-            end;
-        end;
-    end;
-end);
-
-State.Connections.AntiTilt = RunService.RenderStepped:Connect(function()
-    if not isMovementActive() then return end;
-    if isUsingFlightSkill() then return end;
-    if isPlayerCastingSkill() then return end;
-    local char = plr.Character;
-    if not char then return end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    if not hrp then return end;
-    local s = false;
-    if State.IsMoving then s = true;
-    elseif isMovementActive() and State.BodyVelocity and State.BodyVelocity.Parent == hrp then s = true end;
-    if s then
-        local yaw = math.rad(hrp.Orientation.Y);
-        local upCF = CFrame.new(hrp.Position) * CFrame.Angles(0, yaw, 0);
-        hrp.CFrame = upCF;
-        if State.BodyGyro and State.BodyGyro.Parent == hrp then
-            local hd = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z);
-            if hd.Magnitude > 2.0 then State.BodyGyro.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + hd.Unit);
-            else State.BodyGyro.CFrame = upCF end;
-        end;
-    end;
-end);
-
-task.spawn(function()
-    while not State.IsScriptDestroyed do
-        task.wait(0.05);
-        if Cfg.PlayerMovementEnabled then
-            local char = plr.Character;
-            local hrp = char and char:FindFirstChild("HumanoidRootPart");
-            local hum = char and char:FindFirstChildOfClass("Humanoid");
-            if hrp and hum and hum.Health > 0 and not State.IsMoving then
-                if hum.WalkSpeed ~= 16 then pcall(function() hum.WalkSpeed = 16 end) end;
-                local md = hum.MoveDirection;
-                if md.Magnitude > 0.05 then
-                    if not State.WalkBodyVelocity or State.WalkBodyVelocity.Parent ~= hrp then
-                        if State.WalkBodyVelocity then pcall(function() State.WalkBodyVelocity:Destroy() end) end;
-                        State.WalkBodyVelocity = Instance.new("BodyVelocity");
-                        State.WalkBodyVelocity.Name = "Irish_WalkBV";
-                        State.WalkBodyVelocity.MaxForce = Vector3.new(9e9, 0, 9e9);
-                        State.WalkBodyVelocity.P = 1250;
-                        State.WalkBodyVelocity.Parent = hrp;
-                    end;
-                    local ts = Cfg.WalkSpeedValue;
-                    State.WalkBodyVelocity.Velocity = Vector3.new(md.X * ts, 0, md.Z * ts);
-                elseif State.WalkBodyVelocity then
-                    State.WalkBodyVelocity.Velocity = Vector3.zero;
-                end;
-            end;
-        else
-            if State.WalkBodyVelocity then
-                pcall(function() State.WalkBodyVelocity:Destroy() end);
-                State.WalkBodyVelocity = nil;
-            end;
-        end;
-    end;
-end);
-
-task.spawn(function()
-    while not State.IsScriptDestroyed do
-        task.wait(0.15);
-        if not Cfg.AutoSecondSeaQuest and not State.FruitPriorityActive then
-            local busy = Cfg.AutoFarmLevel or Cfg.AutoFarmNearest or Cfg.AutoChestTween or Cfg.AutoTeleportIsland or Cfg.AutoFarmBosses or (Cfg.AutoCollectFruit and State.IsCollectingFruitMoving);
-            if not busy then
-                if State.IsMoving or State.BodyVelocity or State.BodyGyro or State.NoFallAntiGravity then pcall(stopBodyMovers) end;
-            end;
-        end;
-    end;
-end);
+    return Cfg.AutoFarmBosses or Cfg.AutoFarmLevel or Cfg.AutoFarmNearest or Cfg.AutoChestTween or (Cfg.AutoFarmFactory and State.FactoryCoreAlive) or (Cfg.AutoCollectFruit and State.IsCollectingFruitMoving) or Cfg.AutoTeleportIsland;
+end
 
 local function getCommF()
     local r = RS:FindFirstChild("Remotes");
@@ -1387,279 +1217,6 @@ SHIP_EXIT_GATE    = CFrame.new(923.21, 125.10, 32852.83);
 SHIP_OUTSIDE_POS  = Vector3.new(-6508.56, 89.04, -132.84);
 SHIP_Z_THRESHOLD  = 25000;
 SHIP_GATE_OFFSET  = Vector3.new(0, 4, 0);
-
-local MIN_H_RATIO = 0.55;
-local MAX_V_RATIO = 0.65;
-
-local function calcDiagVel(curPos, tgtPos, speed)
-    if not validNum(curPos.X) or not validNum(tgtPos.X) then return Vector3.zero end;
-    local dx = tgtPos.X - curPos.X;
-    local dy = tgtPos.Y - curPos.Y;
-    local dz = tgtPos.Z - curPos.Z;
-    local hd = math.sqrt(dx * dx + dz * dz);
-    local td = math.sqrt(hd * hd + dy * dy);
-    if td < 0.001 then return Vector3.zero end;
-    if hd < 1.5 then
-        local yaw = 0;
-        local char = plr.Character;
-        if char then
-            local hrp = char:FindFirstChild("HumanoidRootPart");
-            if hrp then yaw = math.rad(hrp.Orientation.Y) end;
-        end;
-        local ex = math.sin(yaw);
-        local ez = math.cos(yaw);
-        local hc = speed * 0.6;
-        local vc = 0;
-        if dy > 0 then vc = math.min(speed * MAX_V_RATIO, math.abs(dy) * 2);
-        elseif dy < 0 then vc = -math.min(speed * MAX_V_RATIO, math.abs(dy) * 2) end;
-        return Vector3.new(ex * hc, vc, ez * hc);
-    end;
-    local vr = math.abs(dy) / td;
-    if vr > MAX_V_RATIO then vr = MAX_V_RATIO end;
-    local hr = math.sqrt(math.max(0, 1 - vr * vr));
-    if hr < MIN_H_RATIO then
-        hr = MIN_H_RATIO;
-        vr = math.sqrt(math.max(0, 1 - hr * hr));
-    end;
-    local vs = speed * vr;
-    if dy < 0 then vs = -vs end;
-    local hs = speed * hr;
-    local hdx = dx / hd;
-    local hdz = dz / hd;
-    return Vector3.new(hdx * hs, vs, hdz * hs);
-end;
-
-local function flyToPrecise(tgtPos, spdOverride, timeout, arriveDist)
-    local char = plr.Character;
-    if not char then return false end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    if not hrp or not hum or hum.Health <= 0 then return false end;
-    local tgt;
-    if typeof(tgtPos) == "CFrame" then tgt = tgtPos.Position;
-    elseif typeof(tgtPos) == "Vector3" then tgt = tgtPos;
-    else return false end;
-    if not validNum(tgt.X) then return false end;
-    local spd = spdOverride or Cfg.FlySpeed;
-    if not validNum(spd) then spd = 170 end;
-    timeout = timeout or 45;
-    local ad = arriveDist or 8;
-    stopAllMovement();
-    local bv = Instance.new("BodyVelocity");
-    bv.Name = "Irish_PreciseDiagBV";
-    bv.MaxForce = Vector3.new(9e9, 9e9, 9e9);
-    bv.Velocity = Vector3.zero;
-    bv.Parent = hrp;
-    local bg = Instance.new("BodyGyro");
-    bg.Name = "Irish_PreciseDiagBG";
-    bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9);
-    bg.P = 1e4; bg.D = 1000;
-    bg.CFrame = hrp.CFrame;
-    bg.Parent = hrp;
-    local ag = Instance.new("BodyForce");
-    ag.Name = "Irish_PreciseDiagAntiGrav";
-    ag.Force = Vector3.new(0, workspace.Gravity * 3.5, 0);
-    ag.Parent = hrp;
-    pcall(function()
-        hum.PlatformStand = false;
-        hum.AutoRotate = false;
-        hum.WalkSpeed = 0;
-        hum.JumpPower = 0;
-        hum:SetStateEnabled(Enum.HumanoidStateType.Running, false);
-        hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, false);
-        hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false);
-        hum:SetStateEnabled(Enum.HumanoidStateType.Landed, false);
-        hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, false);
-        hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true);
-        hum:ChangeState(Enum.HumanoidStateType.Freefall);
-    end);
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then
-            p.CanCollide = false;
-            p.CanTouch = false;
-            p.CanQuery = false;
-        end;
-    end;
-    local t0 = tick();
-    local ok = false;
-    while tick() - t0 < timeout and not State.IsScriptDestroyed do
-        local cc = plr.Character;
-        local ch = cc and cc:FindFirstChild("HumanoidRootPart");
-        if not ch or not bv.Parent or not bg.Parent then break end;
-        if not ag.Parent then
-            ag = Instance.new("BodyForce");
-            ag.Name = "Irish_PreciseDiagAntiGrav";
-            ag.Force = Vector3.new(0, workspace.Gravity * 3.5, 0);
-            ag.Parent = ch;
-        end;
-        for _, p in ipairs(cc:GetDescendants()) do
-            if p:IsA("BasePart") and (p.CanCollide or p.CanTouch or p.CanQuery) then
-                p.CanCollide = false;
-                p.CanTouch = false;
-                p.CanQuery = false;
-            end;
-        end;
-        local cur = ch.Position;
-        if not validNum(cur.X) then break end;
-        local dv = tgt - cur;
-        local dist = dv.Magnitude;
-        if not validNum(dist) then break end;
-        if dist <= ad then ok = true; break end;
-        local ds = spd;
-        if dist < 40 then ds = math.max(20, spd * (dist / 40)) end;
-        if dist < 15 then ds = math.max(8, spd * (dist / 15) * 0.6) end;
-        if not validNum(ds) then ds = 60 end;
-        local fv = calcDiagVel(cur, tgt, ds);
-        if ch.AssemblyLinearVelocity.Y < -25 and dv.Y >= 0 then fv = Vector3.new(fv.X, math.max(fv.Y, 20), fv.Z) end;
-        if not validNum(fv.X) then fv = Vector3.new(20, 0, 0) end;
-        bv.Velocity = fv;
-        local hl = Vector3.new(tgt.X, cur.Y, tgt.Z);
-        if (hl - cur).Magnitude > 0.5 then bg.CFrame = CFrame.lookAt(cur, hl) end;
-        task.wait(0.03);
-    end;
-    if bv and bv.Parent then pcall(function() bv:Destroy() end) end;
-    if bg and bg.Parent then pcall(function() bg:Destroy() end) end;
-    if ag and ag.Parent then pcall(function() ag:Destroy() end) end;
-    if ok then
-        local fc = plr.Character;
-        local fh = fc and fc:FindFirstChild("HumanoidRootPart");
-        if fh then
-            fh.CFrame = CFrame.new(tgt) * CFrame.Angles(0, math.rad(fh.Orientation.Y), 0);
-            fh.AssemblyLinearVelocity = Vector3.zero;
-            fh.AssemblyAngularVelocity = Vector3.zero;
-        end;
-    end;
-    return ok;
-end;
-
-local function cleanExitFlight()
-    local char = plr.Character;
-    if not char then return end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    if not hrp then return end;
-    for _, o in ipairs(hrp:GetChildren()) do
-        local n = o.Name;
-        if n == "Irish_BV" or n == "Irish_BG" or n == "Irish_AntiGravity"
-           or n == "Irish_PreciseDiagBV" or n == "Irish_PreciseDiagBG" or n == "Irish_PreciseDiagAntiGrav"
-           or n == "Irish_LockBV" or n == "Irish_LockBG" or n == "Irish_LockAntiGrav" then
-            pcall(function() o:Destroy() end);
-        end;
-    end;
-    State.BodyVelocity = nil; State.BodyGyro = nil; State.NoFallAntiGravity = nil;
-    State.IsMoving = false; State.IsHoveringAtTarget = false;
-    State.Descending = false; State.DescentTargetY = nil;
-    State.LastHorizontalVelocity = Vector3.zero; State.DiagonalFlightActive = false;
-    pcall(function()
-        hrp.AssemblyLinearVelocity = Vector3.zero;
-        hrp.AssemblyAngularVelocity = Vector3.zero;
-    end);
-    if hum and hum.Health > 0 then
-        pcall(function()
-            hum.PlatformStand = false;
-            hum.AutoRotate = true;
-            hum.WalkSpeed = 16;
-            hum.JumpPower = 50;
-            hum:SetStateEnabled(Enum.HumanoidStateType.Running, true);
-            hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, true);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, true);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true);
-            hum:SetStateEnabled(Enum.HumanoidStateType.Landed, true);
-            hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true);
-            hum:ChangeState(Enum.HumanoidStateType.Running);
-        end);
-    end;
-    restoreCharCollisions(char);
-end;
-
-function stopAllMovement()
-    local char = plr.Character;
-    if not char then return end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    if not hrp then return end;
-    State.IsMoving = false; State.IsHoveringAtTarget = false;
-    State.LastVelocityMagnitude = 0;
-    State.Descending = false; State.DescentTargetY = nil;
-    State.LastHorizontalVelocity = Vector3.zero; State.DiagonalFlightActive = false;
-    stopAntiGrav();
-    if State.BodyVelocity then pcall(function() State.BodyVelocity:Destroy() end); State.BodyVelocity = nil end;
-    if State.BodyGyro then pcall(function() State.BodyGyro:Destroy() end); State.BodyGyro = nil end;
-    for _, o in ipairs(hrp:GetChildren()) do
-        local n = o.Name;
-        if n == "Irish_BV" or n == "Irish_BG" or n == "Irish_AntiGravity"
-           or n == "Irish_PreciseDiagBV" or n == "Irish_PreciseDiagBG" or n == "Irish_PreciseDiagAntiGrav"
-           or n == "Irish_LockBV" or n == "Irish_LockBG" or n == "Irish_LockAntiGrav" then
-            pcall(function() o:Destroy() end);
-        end;
-    end;
-    pcall(function()
-        hrp.AssemblyLinearVelocity = Vector3.zero;
-        hrp.AssemblyAngularVelocity = Vector3.zero;
-        hrp.Velocity = Vector3.zero;
-        hrp.RotVelocity = Vector3.zero;
-    end);
-end;
-
-local function lockCharAtPos(tgtPos, hold)
-    local char = plr.Character;
-    if not char then return end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    if not hrp or not hum then return end;
-    local tgt;
-    if typeof(tgtPos) == "CFrame" then tgt = tgtPos.Position;
-    elseif typeof(tgtPos) == "Vector3" then tgt = tgtPos;
-    else return end;
-    if not validNum(tgt.X) then return end;
-    for _, o in ipairs(hrp:GetChildren()) do
-        if o.Name == "Irish_LockBV" or o.Name == "Irish_LockBG" or o.Name == "Irish_LockAntiGrav" then pcall(function() o:Destroy() end) end;
-    end;
-    local bv = Instance.new("BodyVelocity");
-    bv.Name = "Irish_LockBV";
-    bv.MaxForce = Vector3.new(9e9, 9e9, 9e9);
-    bv.Velocity = Vector3.zero;
-    bv.Parent = hrp;
-    local bg = Instance.new("BodyGyro");
-    bg.Name = "Irish_LockBG";
-    bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9);
-    bg.P = 1e4; bg.D = 1000;
-    bg.CFrame = CFrame.new(tgt) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0);
-    bg.Parent = hrp;
-    local ag = Instance.new("BodyForce");
-    ag.Name = "Irish_LockAntiGrav";
-    ag.Force = Vector3.new(0, workspace.Gravity * 3.5, 0);
-    ag.Parent = hrp;
-    pcall(function()
-        hum.PlatformStand = false;
-        hum.AutoRotate = false;
-        hum.WalkSpeed = 0;
-        hum.JumpPower = 0;
-        hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true);
-        hum:ChangeState(Enum.HumanoidStateType.Freefall);
-    end);
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then
-            p.CanCollide = false;
-            p.CanTouch = false;
-            p.CanQuery = false;
-        end;
-    end;
-    local te = tick() + (hold or 0.5);
-    while tick() < te and not State.IsScriptDestroyed do
-        task.wait(0.03);
-        if hrp and bv.Parent then
-            bv.Velocity = Vector3.zero;
-            hrp.CFrame = CFrame.new(tgt) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0);
-            hrp.AssemblyLinearVelocity = Vector3.zero;
-            hrp.AssemblyAngularVelocity = Vector3.zero;
-        else break end;
-    end;
-    if bv and bv.Parent then pcall(function() bv:Destroy() end) end;
-    if bg and bg.Parent then pcall(function() bg:Destroy() end) end;
-    if ag and ag.Parent then pcall(function() ag:Destroy() end) end;
-end;
 
 local function isInsideShip()
     local char = plr.Character;
@@ -1685,30 +1242,37 @@ local function goIntoShip()
         local hrp = char and char:FindFirstChild("HumanoidRootPart");
         if not hrp then return end;
         if isInsideShip() then return end;
+        
         local ap = SHIP_ENTRY_GATE.Position + SHIP_GATE_OFFSET;
-        local d = (hrp.Position - ap).Magnitude;
-        if d > 4 then flyToPrecise(ap, Cfg.FlySpeed, 45, 4) end;
-        char = plr.Character; hrp = char and char:FindFirstChild("HumanoidRootPart");
-        if not hrp then return end;
-        hrp.CFrame = CFrame.new(ap) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0);
-        hrp.AssemblyLinearVelocity = Vector3.zero;
-        hrp.AssemblyAngularVelocity = Vector3.zero;
-        lockCharAtPos(ap, 0.4);
+        local t0 = tick()
+        
+        while (hrp.Position - ap).Magnitude > 5 and tick() - t0 < 25 do
+            moveToTarget(CFrame.new(ap))
+            task.wait(0.05)
+        end
+        
+        if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+        if Flight.bodyGyro then Flight.bodyGyro.CFrame = hrp.CFrame end
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+        
+        task.wait(0.2)
+        
         local cf = getCommF();
-        if cf then pcall(function() cf:InvokeServer("requestEntrance", SHIP_INSIDE_POS) end) end;
+        if cf then 
+            pcall(function() cf:InvokeServer("requestEntrance", SHIP_INSIDE_POS) end);
+        end;
+        
         local ws = tick();
         while tick() - ws < 4.0 and not State.IsScriptDestroyed do
             task.wait(0.05);
             char = plr.Character; hrp = char and char:FindFirstChild("HumanoidRootPart");
             if hrp and isInsideShip() then break end;
-            if hrp then
-                hrp.CFrame = CFrame.new(ap) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0);
-                hrp.AssemblyLinearVelocity = Vector3.zero;
-                hrp.AssemblyAngularVelocity = Vector3.zero;
-            end;
         end;
     end);
-    cleanExitFlight();
+    stopAllMovement();
     task.wait(0.2);
     State.ShipTransitionLock = false;
     return ok;
@@ -1722,30 +1286,37 @@ local function goOutShip()
         local hrp = char and char:FindFirstChild("HumanoidRootPart");
         if not hrp then return end;
         if not isInsideShip() then return end;
+        
         local ap = SHIP_EXIT_GATE.Position + SHIP_GATE_OFFSET;
-        local d = (hrp.Position - ap).Magnitude;
-        if d > 4 then flyToPrecise(ap, Cfg.FlySpeed, 40, 4) end;
-        char = plr.Character; hrp = char and char:FindFirstChild("HumanoidRootPart");
-        if not hrp then return end;
-        hrp.CFrame = CFrame.new(ap) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0);
-        hrp.AssemblyLinearVelocity = Vector3.zero;
-        hrp.AssemblyAngularVelocity = Vector3.zero;
-        lockCharAtPos(ap, 0.4);
+        local t0 = tick()
+        
+        while (hrp.Position - ap).Magnitude > 5 and tick() - t0 < 25 do
+            moveToTarget(CFrame.new(ap))
+            task.wait(0.05)
+        end
+        
+        if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+        if Flight.bodyGyro then Flight.bodyGyro.CFrame = hrp.CFrame end
+        pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+        
+        task.wait(0.2)
+        
         local cf = getCommF();
-        if cf then pcall(function() cf:InvokeServer("requestEntrance", SHIP_OUTSIDE_POS) end) end;
+        if cf then 
+            pcall(function() cf:InvokeServer("requestEntrance", SHIP_OUTSIDE_POS) end);
+        end;
+        
         local ws = tick();
         while tick() - ws < 4.0 and not State.IsScriptDestroyed do
             task.wait(0.05);
             char = plr.Character; hrp = char and char:FindFirstChild("HumanoidRootPart");
             if hrp and not isInsideShip() then break end;
-            if hrp then
-                hrp.CFrame = CFrame.new(ap) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0);
-                hrp.AssemblyLinearVelocity = Vector3.zero;
-                hrp.AssemblyAngularVelocity = Vector3.zero;
-            end;
         end;
     end);
-    cleanExitFlight();
+    stopAllMovement();
     task.wait(0.2);
     State.ShipTransitionLock = false;
     return ok;
@@ -1770,84 +1341,12 @@ local function ensureCorrectDim(tgtPos)
     return true;
 end;
 
-local function moveToTarget(tgtCF)
-    local char = plr.Character;
-    if not char then return end;
-    local hrp = char:FindFirstChild("HumanoidRootPart");
-    local hum = char:FindFirstChildOfClass("Humanoid");
-    if not hrp or not hum or hum.Health <= 0 then return end;
-    if not tgtCF then return end;
-    local tp;
-    if typeof(tgtCF) == "CFrame" then tp = tgtCF.Position;
-    elseif typeof(tgtCF) == "Vector3" then tp = tgtCF;
-    else return end;
-    if not validNum(tp.X) then return end;
-    if ensureCorrectDim(tp) then
-        if State.BodyVelocity and State.BodyVelocity.Parent == hrp then State.BodyVelocity.Velocity = Vector3.zero end;
-        return;
-    end;
-    local cp = hrp.Position;
-    if not validNum(cp.X) then return end;
-    local dv = tp - cp;
-    local td = dv.Magnitude;
-    if not validNum(td) then return end;
-    local bv = ensureBodyMovers();
-    if not bv then return end;
-    State.IsMoving = true;
-    State.DiagonalFlightActive = true;
-    startAntiGrav();
-    local fs = Cfg.FlySpeed;
-    if not validNum(fs) then fs = 170 end;
-    local cv = hrp.AssemblyLinearVelocity.Magnitude;
-    if not validNum(cv) then cv = 0 end;
-    local ms = math.clamp(fs, 50, 200);
-    local bd = math.max(3.5, (cv * cv) / (2 * ms) * 0.15);
-    bd = math.clamp(bd, 3.5, 8);
-    local arrived = (td <= bd) or (State.IsHoveringAtTarget and td <= bd + 3);
-    if arrived then
-        State.IsHoveringAtTarget = true;
-        bv.Velocity = Vector3.zero;
-        hrp.AssemblyLinearVelocity = Vector3.zero;
-        hrp.Velocity = Vector3.zero;
-        hrp.AssemblyAngularVelocity = Vector3.zero;
-        hrp.RotVelocity = Vector3.zero;
-        local yaw = math.rad(hrp.Orientation.Y);
-        local stable = CFrame.Angles(0, yaw, 0);
-        hrp.CFrame = CFrame.new(tp) * stable;
-        if State.BodyGyro and State.BodyGyro.Parent == hrp then
-            State.BodyGyro.MaxTorque = Vector3.new(0, 9e9, 0);
-            State.BodyGyro.CFrame = CFrame.new(tp) * stable;
-        end;
-        State.LastVelocityMagnitude = 0;
-        return;
-    end;
-    State.IsHoveringAtTarget = false;
-    local ds = ms;
-    if td < 30 then ds = math.max(15, ms * (td / 30)) end;
-    if td < 10 then ds = math.max(8, ms * (td / 10) * 0.5) end;
-    if not validNum(ds) then ds = 50 end;
-    if State.BodyGyro and State.BodyGyro.Parent == hrp then
-        State.BodyGyro.MaxTorque = Vector3.new(0, 9e9, 0);
-        local hd = Vector3.new(dv.X, 0, dv.Z);
-        if hd.Magnitude > 1.0 then State.BodyGyro.CFrame = CFrame.lookAt(cp, cp + hd);
-        else
-            local yaw = math.rad(hrp.Orientation.Y);
-            State.BodyGyro.CFrame = CFrame.new(cp) * CFrame.Angles(0, yaw, 0);
-        end;
-    end;
-    if hrp.AssemblyLinearVelocity.Magnitude > ms + 15 then hrp.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity.Unit * ms end;
-    local fv = calcDiagVel(cp, tp, ds);
-    if not validNum(fv.X) then fv = Vector3.zero end;
-    bv.Velocity = fv;
-    State.LastVelocityMagnitude = ds;
-end;
-
-local MAX_FRUIT_SIZE = 4;
-local sortedFruitKeys = {};
+MAX_FRUIT_SIZE = 8;
+sortedFruitKeys = {};
 for k in pairs(BLOX_FRUIT_ID_MAP) do table.insert(sortedFruitKeys, k) end;
 table.sort(sortedFruitKeys, function(a, b) return #a > #b end);
 
-local BLOCKED_KEYWORDS = {
+BLOCKED_KEYWORDS = {
     "statue", "wall", "block", "crystal", "cave", "rock", "tree",
     "door", "gate", "pillar", "tower", "iceberg", "glacier", "snowman",
     "platform", "island", "map", "part", "barrier", "shield"
@@ -1912,7 +1411,7 @@ local function findAllGroundFruits()
     return out;
 end;
 
-local function isFarmingActive() return Cfg.AutoFarmLevel or Cfg.AutoFarmNearest or Cfg.AutoFarmBosses end;
+local function isFarmingActive() return Cfg.AutoFarmLevel or Cfg.AutoFarmNearest or Cfg.AutoFarmBosses or (Cfg.AutoFarmFactory and State.FactoryCoreAlive) end;
 
 local function toolMatchesWeapon(tool, wt)
     if not tool or not tool:IsA("Tool") then return false end;
@@ -1995,17 +1494,11 @@ end;
 
 MobExclusions = {
     ["prisoner"] = {"dangerous", "ruthless"}, ["bandit"] = {"desert", "snow", "sky"},
-    ["pirate"] = {"galley"}, ["master"] = {"dark"}, ["guard"] = {"god", "gods"},
-    ["warrior"] = {"fishman", "toga"}, ["officer"] = {"chief", "petty"},
-    ["captain"] = {"galley"}, ["soldier"] = {"military"}, ["spy"] = {"military"},
-    ["commando"] = {"fishman"}, ["squad"] = {"royal"},
-    ["soldier"] = {"military", "sea"},
-    ["trooper"] = {"snow"},
-    ["pirate"] = {"galley", "swan", "lava"},
-    ["mercenary"] = {"swan"},
-    ["warrior"] = {"horned", "arctic", "winter", "sea"},
-    ["hunter"] = {"water"},
-    ["deckhand"] = {"ship"},
+    ["pirate"] = {"galley", "swan", "lava"}, ["master"] = {"dark"}, ["guard"] = {"god", "gods"},
+    ["warrior"] = {"fishman", "toga", "horned", "arctic", "winter", "sea"}, ["officer"] = {"chief", "petty"},
+    ["captain"] = {"galley"}, ["soldier"] = {"military", "sea"}, ["spy"] = {"military"},
+    ["commando"] = {"fishman"}, ["squad"] = {"royal"}, ["trooper"] = {"snow"},
+    ["mercenary"] = {"swan"}, ["hunter"] = {"water"}, ["deckhand"] = {"ship"},
 };
 
 local function mobMatches(en, tn, mob)
@@ -2095,73 +1588,7 @@ local function getNearbyEntities(r)
     return out;
 end;
 
-local function isMobIgnored(m)
-    if not m then return false end;
-    local t = State.IgnoredInvincibleMobs[m];
-    if not t then return false end;
-    if tick() - t > 30 then
-        State.IgnoredInvincibleMobs[m] = nil;
-        State.MobHealthTracker[m] = nil;
-        return false;
-    end;
-    return true;
-end;
-
-local function markInvincible(m)
-    if not m then return end;
-    State.IgnoredInvincibleMobs[m] = tick();
-    State.MobHealthTracker[m] = nil;
-    if State.CurrentTargetMob == m then
-        pcall(function() unfreezeMob(m) end);
-        State.CurrentTargetMob = nil;
-        State.FastAttackTarget = nil;
-    end;
-end;
-
-local function trackMobDamage(m)
-    if not m or not m.Parent then return end;
-    local h = m:FindFirstChildOfClass("Humanoid");
-    if not h or h.Health <= 0 then State.MobHealthTracker[m] = nil; return end;
-    local now = tick();
-    local tr = State.MobHealthTracker[m];
-    if not tr then
-        State.MobHealthTracker[m] = {lastHealth = h.Health, lastDamageTime = now, firstSeenTime = now};
-        return;
-    end;
-    if h.Health < tr.lastHealth - 0.01 then
-        tr.lastHealth = h.Health;
-        tr.lastDamageTime = now;
-    end;
-end;
-
-task.spawn(function()
-    while not State.IsScriptDestroyed do
-        task.wait(State.InvincibleCheckInterval or 0.25);
-        local now = tick();
-        local th = State.InvincibleNoDamageThreshold or 4;
-        local active = {};
-        if State.CurrentTargetMob then table.insert(active, State.CurrentTargetMob) end;
-        if State.FastAttackTarget and State.FastAttackTarget ~= State.CurrentTargetMob then table.insert(active, State.FastAttackTarget) end;
-        for _, m in ipairs(active) do
-            if m and m.Parent then
-                local h = m:FindFirstChildOfClass("Humanoid");
-                if h and h.Health > 0 then
-                    trackMobDamage(m);
-                    local tr = State.MobHealthTracker[m];
-                    if tr and now - tr.lastDamageTime >= th then markInvincible(m) end;
-                else State.MobHealthTracker[m] = nil end;
-            else State.MobHealthTracker[m] = nil end;
-        end;
-        for m, _ in pairs(State.IgnoredInvincibleMobs) do
-            if not m or not m.Parent then
-                State.IgnoredInvincibleMobs[m] = nil;
-                State.MobHealthTracker[m] = nil;
-            end;
-        end;
-    end;
-end);
-
-local FRUIT_M1_RANGE = 65;
+FRUIT_M1_RANGE = 65;
 
 local function performFastHit()
     local tgt = State.FastAttackTarget;
@@ -2231,9 +1658,9 @@ task.spawn(function()
     local evt = RunService.RenderStepped;
     while not State.IsScriptDestroyed do
         evt:Wait();
-        if Cfg.AutoFarmLevel and State.FastAttackTarget and State.FastAttackTarget.Parent then
+        if (Cfg.AutoFarmLevel or (Cfg.AutoFarmFactory and State.FactoryCoreAlive)) and State.FastAttackTarget and State.FastAttackTarget.Parent then
             local now = tick();
-            local d = Cfg.AttackDelay or 0.01;
+            local d = tonumber(Cfg.AttackDelay) or 0.01;
             if d < 0.01 then d = 0.01 end;
             if now - (State.LastM1Time or 0) >= d then
                 State.LastM1Time = now;
@@ -2246,10 +1673,6 @@ end);
 local function attackTarget(tgt)
     if tgt and tgt.Parent then
         State.FastAttackTarget = tgt;
-        if not State.MobHealthTracker[tgt] then
-            local h = tgt:FindFirstChildOfClass("Humanoid");
-            if h then State.MobHealthTracker[tgt] = {lastHealth = h.Health, lastDamageTime = tick(), firstSeenTime = tick()} end;
-        end;
     end;
     pcall(function()
         local char = plr.Character;
@@ -2331,7 +1754,12 @@ end);
 
 local function getTargetMob(tn)
     if not tn then return nil end;
-    if State.CurrentTargetMob and isMobIgnored(State.CurrentTargetMob) then State.CurrentTargetMob = nil end;
+    if State.CurrentTargetMob and not State.CurrentTargetMob.Parent then
+        State.CurrentTargetMob = nil
+    end
+    if State.FastAttackTarget and not State.FastAttackTarget.Parent then
+        State.FastAttackTarget = nil
+    end
     if State.CurrentTargetMob and State.CurrentTargetMob.Parent then
         if Players:GetPlayerFromCharacter(State.CurrentTargetMob) or Players:FindFirstChild(State.CurrentTargetMob.Name) then
             unfreezeMob(State.CurrentTargetMob);
@@ -2359,19 +1787,15 @@ local function getTargetMob(tn)
         if ct then
             for _, e in ipairs(ct:GetChildren()) do
                 if e:IsA("Model") and e ~= char and not Players:GetPlayerFromCharacter(e) and not Players:FindFirstChild(e.Name) then
-                    local rn = e.Name;
-                    local cl = rn:lower();
+                    local cl = e.Name:lower();
                     if not cl:find("giver") and not cl:find("quest") and not cl:find("dealer") then
                         local h = e:FindFirstChildOfClass("Humanoid");
                         local eh = e:FindFirstChild("HumanoidRootPart") or e:FindFirstChild("Head") or e:FindFirstChildWhichIsA("BasePart");
                         if h and h.Health > 0 and eh then
                             local ec = normalize(e.Name);
-                            if isMobIgnored(e) then
-                            else
-                                if ec == tl then
-                                    if mobMatches(e.Name, tn, e) then table.insert(exact, e) end;
-                                elseif mobMatches(e.Name, tn, e) then table.insert(partial, e) end;
-                            end;
+                            if ec == tl then
+                                if mobMatches(e.Name, tn, e) then table.insert(exact, e) end;
+                            elseif mobMatches(e.Name, tn, e) then table.insert(partial, e) end;
                         end;
                     end;
                 end;
@@ -2547,19 +1971,123 @@ local function restoreFarmState()
     if State.QuestState == "FARMING" and State.CurrentQuestData then State.LockedQuestTitle = State.CurrentQuestData.Mob end;
 end;
 
+local function resetAfterDeath()
+    pcall(stopFlight)
+    Flight.active = false
+    Flight.savedState = nil
+    Flight.savedChar = nil
+    Flight.bodyVelocity = nil
+    Flight.bodyGyro = nil
+    Flight.antiGrav = nil
+    Noclip.active = false
+
+    pcall(clearAllFreezes)
+    State.FrozenPositions = {}
+
+    State.CurrentTargetMob = nil
+    State.FastAttackTarget = nil
+
+    State.PatrolIndex = 1
+    State.PatrolLastSwitch = 0
+    State.WasFramePresent = false
+    State.LastProgressSnapshot = nil
+    State.QuestJustCompleted = false
+
+    State.FactoryHovering = false
+    State.FastAttackTarget = nil
+
+    State.FruitPriorityActive = false
+    State.IsCollectingFruitMoving = false
+    State.FruitCollectFlightSession = (State.FruitCollectFlightSession or 0) + 1
+    State.FruitCollectTargetObject = nil
+
+    State.LastAttack = 0
+    State.LastM1Time = 0
+    State.LastBuso = 0
+
+    if State.WalkBodyVelocity then
+        pcall(function() State.WalkBodyVelocity:Destroy() end)
+        State.WalkBodyVelocity = nil
+    end
+
+    pcall(function()
+        for _, o in ipairs(Workspace:GetChildren()) do
+            if o:IsA("Model") and o:FindFirstChildOfClass("Humanoid") then
+                for _, d in ipairs(o:GetDescendants()) do
+                    if d:IsA("BodyMover") and d.Name:match("^Irish_") then
+                        pcall(function() d:Destroy() end)
+                    end
+                end
+            end
+        end
+    end)
+
+    State.MobSweepMem = {}
+    State.MobSweepIndex = 1
+    State.MobSweepLastSwitch = 0
+end
+
+local function hookDeath(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.Died:Connect(function()
+            task.defer(resetAfterDeath)
+        end)
+    end
+end
+if plr.Character then hookDeath(plr.Character) end
+plr.CharacterAdded:Connect(function(newChar)
+    task.defer(function()
+        resetAfterDeath()
+        local hum = newChar:WaitForChild("Humanoid", 5)
+        local hrp = newChar:WaitForChild("HumanoidRootPart", 5)
+        if hum and hrp then
+            pcall(function()
+                hum.PlatformStand = false
+                hum.AutoRotate = true
+                if hum.WalkSpeed <= 0 then hum.WalkSpeed = 16 end
+                if hum.JumpPower <= 0 then hum.JumpPower = 50 end
+                hum:ChangeState(Enum.HumanoidStateType.Running)
+            end)
+            pcall(function()
+                hrp.Anchored = false
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+        pcall(cacheCharParts)
+        if Cfg.PlayerMovementEnabled and hum then
+            pcall(function()
+                hum.WalkSpeed = 16
+                hum.JumpPower = Cfg.JumpPowerValue or 50
+                hum.UseJumpPower = true
+            end)
+        end
+    end)
+end)
+plr.CharacterAdded:Connect(hookDeath)
+
 task.spawn(function()
     while not State.IsScriptDestroyed do
         local evt = RunService.PreSimulation or RunService.Heartbeat;
         evt:Wait();
         if Cfg.AutoFarmLevel then
-            if not State.FruitPriorityActive then
+            if not State.FruitPriorityActive and not (Cfg.AutoFarmFactory and State.FactoryCoreAlive) then
                 equipWeapon(true);
                 pcall(function()
                     local char = plr.Character;
                     if not char then return end;
                     local hrp = char:FindFirstChild("HumanoidRootPart");
                     local hum = char:FindFirstChildOfClass("Humanoid");
-                    if not hrp or not hum or hum.Health <= 0 then return end;
+                    if not hrp or not hum or hum.Health <= 0 then
+                        if State.CurrentTargetMob then
+                            pcall(function() unfreezeMob(State.CurrentTargetMob) end)
+                            State.CurrentTargetMob = nil
+                        end
+                        State.FastAttackTarget = nil
+                        if Flight.active then pcall(stopFlight) end
+                        return
+                    end;
                     checkEquipBuso();
                     if State.IsTransitioningDimension then return end;
 
@@ -2606,6 +2134,7 @@ task.spawn(function()
                         State.LockedQuestTitle = nil;
                         State.PatrolIndex = 1;
                         State.PatrolLastSwitch = 0;
+                        mobSweepClear();
                         return;
                     end;
                     if State.QuestState == "IDLE" then
@@ -2632,7 +2161,7 @@ task.spawn(function()
                         local d = (hrp.Position - gp).Magnitude;
                         if d > 6 then moveToTarget(State.CurrentQuestData.Giver);
                         else
-                            if State.BodyVelocity and State.BodyVelocity.Parent == hrp then State.BodyVelocity.Velocity = Vector3.zero end;
+                            if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
                             hrp.AssemblyLinearVelocity = Vector3.zero;
                             hrp.AssemblyAngularVelocity = Vector3.zero;
                             hrp.CFrame = CFrame.new(gp + Vector3.new(0, 3, 0));
@@ -2690,27 +2219,34 @@ task.spawn(function()
                             if not th or th.Health <= 0 then tm = nil end;
                         end;
                         if not tm or not tm.Parent then tm = getTargetMob(mn) end;
+
+                        if State.CurrentQuestData.Spawn then mobSweepRememberCF(State.CurrentQuestData.Spawn) end
+                        if State.CurrentQuestData.Spawn2 then mobSweepRememberCF(State.CurrentQuestData.Spawn2) end
+
                         if tm and tm:FindFirstChild("HumanoidRootPart") then
                             local mh = tm:FindFirstChildOfClass("Humanoid");
                             if mh and mh.Health > 0 then
-                                if isMobIgnored(tm) then
-                                    unfreezeMob(tm);
-                                    State.CurrentTargetMob = nil;
-                                    State.FastAttackTarget = nil;
-                                    tm = nil;
+                                checkEquipBuso();
+                                freezeMob(tm);
+                                State.FastAttackTarget = tm;
+                                local mb = tm.HumanoidRootPart.Position;
+                                local so = Cfg.SafeDistance;
+                                if type(so) ~= "Vector3" then so = Vector3.new(0, 10, 0) end;
+                                local nt = mb + so;
+                                
+                                local dist = (hrp.Position - nt).Magnitude
+                                if dist <= 6 then
+                                    pcall(function()
+                                        hrp.CFrame = CFrame.new(nt) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0)
+                                    end)
+                                    if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
                                 else
-                                    checkEquipBuso();
-                                    freezeMob(tm);
-                                    State.FastAttackTarget = tm;
-                                    local mb = (State.FrozenPositions[tm] and State.FrozenPositions[tm].Position) or tm.HumanoidRootPart.Position;
-                                    local so = Cfg.SafeDistance;
-                                    if type(so) ~= "Vector3" then so = Vector3.new(0, 10, 0) end;
-                                    local nt = mb + so;
                                     if validNum(nt.X) then moveToTarget(CFrame.new(nt)) end;
-                                    if tick() - State.LastAttack >= Cfg.AttackDelay then
-                                        State.LastAttack = tick();
-                                        attackTarget(tm);
-                                    end;
+                                end
+                                
+                                if tick() - State.LastAttack >= Cfg.AttackDelay then
+                                    State.LastAttack = tick();
+                                    attackTarget(tm);
                                 end;
                             else
                                 unfreezeMob(tm);
@@ -2720,7 +2256,11 @@ task.spawn(function()
                         else
                             clearAllFreezes();
                             State.FastAttackTarget = nil;
-                            if State.CurrentQuestData.Spawn2 then
+
+                            local sweepTarget = mobSweepGetNextTarget()
+                            if sweepTarget then
+                                if validNum(sweepTarget.X) then moveToTarget(CFrame.new(sweepTarget)) end
+                            elseif State.CurrentQuestData.Spawn2 then
                                 local now = tick();
                                 if not State.PatrolLastSwitch or State.PatrolLastSwitch == 0 then
                                     State.PatrolIndex = 1;
@@ -2734,11 +2274,13 @@ task.spawn(function()
                                 local pcf = (State.PatrolIndex == 1) and State.CurrentQuestData.Spawn or State.CurrentQuestData.Spawn2;
                                 if (hrp.Position - pcf.Position).Magnitude > 5 then moveToTarget(pcf);
                                 else
-                                    if State.BodyVelocity and State.BodyVelocity.Parent == hrp then State.BodyVelocity.Velocity = Vector3.zero end;
+                                    if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
                                     hrp.AssemblyLinearVelocity = Vector3.zero;
                                     hrp.AssemblyAngularVelocity = Vector3.zero;
                                 end;
-                            else moveToTarget(State.CurrentQuestData.Spawn) end;
+                            elseif State.CurrentQuestData.Spawn then
+                                moveToTarget(State.CurrentQuestData.Spawn)
+                            end;
                         end;
                         return;
                     end;
@@ -2752,14 +2294,22 @@ task.spawn(function()
     while not State.IsScriptDestroyed do
         task.wait(0.05);
         if Cfg.AutoFarmNearest then
-            if not State.FruitPriorityActive then
+            if not State.FruitPriorityActive and not (Cfg.AutoFarmFactory and State.FactoryCoreAlive) then
                 if State.IsTransitioningDimension then task.wait(0.2); continue end;
                 pcall(function()
                     local char = plr.Character;
                     if not char then return end;
                     local hrp = char:FindFirstChild("HumanoidRootPart");
                     local hum = char:FindFirstChildOfClass("Humanoid");
-                    if not hrp or not hum or hum.Health <= 0 then return end;
+                    if not hrp or not hum or hum.Health <= 0 then
+                        if State.CurrentTargetMob then
+                            pcall(function() unfreezeMob(State.CurrentTargetMob) end)
+                            State.CurrentTargetMob = nil
+                        end
+                        State.FastAttackTarget = nil
+                        if Flight.active then pcall(stopFlight) end
+                        return
+                    end;
                     checkEquipBuso();
                     equipWeapon();
                     local nm = nil;
@@ -2768,34 +2318,220 @@ task.spawn(function()
                     if enf then
                         for _, e in ipairs(enf:GetChildren()) do
                             if e ~= char and not Players:GetPlayerFromCharacter(e) and not Players:FindFirstChild(e.Name) then
-                                if not isMobIgnored(e) then
-                                    local eh = e:FindFirstChildOfClass("Humanoid");
-                                    local ehp = e:FindFirstChild("HumanoidRootPart") or e:FindFirstChildWhichIsA("BasePart");
-                                    if eh and eh.Health > 0 and ehp then
-                                        local d = (hrp.Position - ehp.Position).Magnitude;
-                                        if d < nd and d < 3500 then nd = d; nm = e end;
-                                    end;
+                                local eh = e:FindFirstChildOfClass("Humanoid");
+                                local ehp = e:FindFirstChild("HumanoidRootPart") or e:FindFirstChildWhichIsA("BasePart");
+                                if eh and eh.Health > 0 and ehp then
+                                    local d = (hrp.Position - ehp.Position).Magnitude;
+                                    if d < nd and d < 3500 then nd = d; nm = e end;
                                 end;
                             end;
                         end;
                     end;
                     if nm and nm:FindFirstChild("HumanoidRootPart") then
                         freezeMob(nm);
-                        local mb = (State.FrozenPositions[nm] and State.FrozenPositions[nm].Position) or nm.HumanoidRootPart.Position;
+                        mobSweepRememberCF(nm.HumanoidRootPart.Position)
+                        local mb = nm.HumanoidRootPart.Position;
                         local so = Cfg.SafeDistance;
                         if type(so) ~= "Vector3" then so = Vector3.new(0, 10, 0) end;
                         local nt = mb + so;
-                        if validNum(nt.X) then moveToTarget(CFrame.new(nt)) end;
+                        
+                        local dist = (hrp.Position - nt).Magnitude
+                        if dist <= 6 then
+                            pcall(function()
+                                hrp.CFrame = CFrame.new(nt) * CFrame.Angles(0, math.rad(hrp.Orientation.Y), 0)
+                            end)
+                            if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+                        else
+                            if validNum(nt.X) then moveToTarget(CFrame.new(nt)) end;
+                        end
+                        
                         local now = tick();
                         if now - State.LastAttack >= Cfg.AttackDelay then
                             State.LastAttack = now;
                             attackTarget(nm);
                         end;
-                    else clearAllFreezes() end;
+                    else
+                        clearAllFreezes()
+                        local sweepTarget = mobSweepGetNextTarget()
+                        if sweepTarget then
+                            if validNum(sweepTarget.X) then moveToTarget(CFrame.new(sweepTarget)) end
+                        end
+                    end;
                 end);
             end;
         end;
     end;
+end);
+
+local function isFactoryRaidActive()
+    local enemies = workspace:FindFirstChild("Enemies")
+    local core = enemies and enemies:FindFirstChild("Core")
+    if core then
+        local hum = core:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then return true end
+    end
+    local main = PlayerGui:FindFirstChild("Main")
+    local top = main and main:FindFirstChild("TopHUDList")
+    local raidTimer = top and top:FindFirstChild("RaidTimer")
+    if raidTimer and raidTimer.Visible then return true end
+    return false
+end
+
+local function findFactoryCore()
+    local hrp = ctGetHRP()
+    if not hrp then return nil end
+    local myPos = hrp.Position
+    local best, bestDist = nil, math.huge
+    local enf = workspace:FindFirstChild("Enemies")
+    if enf then
+        for _, e in ipairs(enf:GetChildren()) do
+            if e.Name:find("Core") and not Players:GetPlayerFromCharacter(e) then
+                local eh = e:FindFirstChildOfClass("Humanoid")
+                local ehp = e:FindFirstChild("HumanoidRootPart")
+                if eh and ehp and eh.Health > 0 then
+                    local d = (ehp.Position - myPos).Magnitude
+                    if d < bestDist then best, bestDist = e, d end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function flyToFactory()
+    local core = findFactoryCore()
+    local dest
+    if core then
+        local mhrp = core:FindFirstChild("HumanoidRootPart")
+        if mhrp then dest = mhrp.Position + Vector3.new(0, Cfg.HoverHeight or 3, 0) end
+    end
+    if not dest then dest = Vector3.new(427.79, 182.54, -431.78) + Vector3.new(0, Cfg.HoverHeight or 3, 0) end
+
+    State.FactoryLockedPosition = dest
+    State.FactoryLockedAtFactory = true
+    local t0 = tick()
+    while tick() - t0 < 30 do
+        if not Cfg.AutoFarmFactory or State.IsScriptDestroyed then break end
+        if State.FruitPriorityActive then break end
+        local hrp = ctGetHRP()
+        if not hrp then break end
+        if (hrp.Position - dest).Magnitude <= (Cfg.FlyArrivalRadius or 5) then break end
+        if not Flight.active then startFlight() end
+        moveToTarget(CFrame.new(dest), Cfg.FactoryFlySpeed)
+        task.wait(0.05)
+    end
+end
+
+task.spawn(function()
+    while not State.IsScriptDestroyed do
+        task.wait(0.08)
+        if Cfg.AutoFarmFactory then
+            if not State.FruitPriorityActive then
+                pcall(function()
+                    local char = plr.Character
+                    if not char then return end
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if not hrp or not hum or hum.Health <= 0 then
+                        if Flight.active then pcall(stopFlight) end
+                        return
+                    end
+
+                    local core = findFactoryCore()
+                    State.FactoryCoreAlive = (core ~= nil)
+                    State.FactoryRaidActive = isFactoryRaidActive()
+
+                    if State.FactoryRaidActive and core then
+                        if not State.FactoryLockedAtFactory then
+                            State.FactoryLockedAtFactory = true
+                            flyToFactory()
+                            return
+                        end
+                    else
+                        local wasActive = State.FactoryLockedAtFactory or State.FactoryHovering
+                        State.FactoryLockedAtFactory = false
+                        State.FactoryLockedPosition = nil
+                        State.FactoryTarget = nil
+                        State.FactoryHovering = false
+                        State.FactoryStatus = "waiting for core"
+                        State.FastAttackTarget = nil
+                        if wasActive and not anyOtherFlightUser("factory") then
+                            pcall(stopAllMovement)
+                        end
+                        return
+                    end
+
+                    if State.FactoryLockedAtFactory then
+                        local liveCore = findFactoryCore()
+                        local targetPos
+                        if liveCore then
+                            local mhrp = liveCore:FindFirstChild("HumanoidRootPart")
+                            if mhrp then
+                                targetPos = mhrp.Position + Vector3.new(0, Cfg.HoverHeight or 3, 0)
+                            end
+                        end
+                        if not targetPos then targetPos = State.FactoryLockedPosition end
+                        if targetPos then
+                            State.FactoryLockedPosition = targetPos
+                            local distToLock = (hrp.Position - targetPos).Magnitude
+                            if distToLock > (Cfg.FlyArrivalRadius or 5) then
+                                if not Flight.active then startFlight() end
+                                moveToTarget(CFrame.new(targetPos), Cfg.FactoryFlySpeed)
+                                State.FactoryStatus = "flying to core"
+                                return
+                            else
+                                if not Flight.active then startFlight() end
+                                if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+                                pcall(function()
+                                    hrp.AssemblyLinearVelocity = Vector3.zero
+                                    hrp.AssemblyAngularVelocity = Vector3.zero
+                                end)
+                                State.FactoryHovering = true
+                            end
+                        end
+                    end
+
+                    State.FactoryTarget = core
+                    if not core then
+                        State.FactoryStatus = "waiting for core"
+                        State.FactoryLockedAtFactory = false
+                        State.FactoryLockedPosition = nil
+                        State.FactoryCoreAlive = false
+                        State.FastAttackTarget = nil
+                        if not anyOtherFlightUser("factory") then pcall(stopAllMovement) end
+                        return
+                    end
+
+                    local mhrp = core:FindFirstChild("HumanoidRootPart")
+                    if not mhrp then return end
+                    local dist = (mhrp.Position - hrp.Position).Magnitude
+                    if dist > (Cfg.AttackRange or 35) then
+                        State.FactoryStatus = "waiting for range"
+                        return
+                    end
+
+                    State.FactoryStatus = "fighting"
+                    pcall(function()
+                        local lookAt = CFrame.new(hrp.Position, Vector3.new(mhrp.Position.X, hrp.Position.Y, mhrp.Position.Z))
+                        hrp.CFrame = lookAt
+                    end)
+                    equipWeapon()
+                    State.FastAttackTarget = core
+                end)
+            end
+        else
+            if State.FactoryCoreAlive or State.FactoryLockedAtFactory then
+                State.FactoryCoreAlive = false
+                State.FactoryRaidActive = false
+                State.FactoryLockedAtFactory = false
+                State.FactoryLockedPosition = nil
+                State.FactoryTarget = nil
+                State.FactoryHovering = false
+                State.FactoryStatus = "idle"
+                if not anyOtherFlightUser("factory") then pcall(stopAllMovement) end
+            end
+        end
+    end
 end);
 
 task.spawn(function()
@@ -2909,18 +2645,20 @@ task.spawn(function()
         task.wait(0.15);
         if Cfg.AutoCollectFruit then
             pcall(function()
-                if State.IsTransitioningDimension then task.wait(0.2); return end;
+                if State.IsTransitioningDimension or (Cfg.AutoFarmFactory and State.FactoryCoreAlive) then task.wait(0.2); return end;
                 local char = plr.Character;
                 local hrp = char and char:FindFirstChild("HumanoidRootPart");
                 local hum = char and char:FindFirstChildOfClass("Humanoid");
                 if not hrp or not hum or hum.Health <= 0 then
-                    if State.IsCollectingFruitMoving then
+                    if State.IsCollectingFruitMoving or State.FruitPriorityActive then
                         State.IsCollectingFruitMoving = false;
                         State.FruitPriorityActive = false;
-                        stopBodyMovers();
-                    end;
+                        State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1
+                        State.FruitCollectTargetObject = nil
+                        if not anyOtherFlightUser("fruit") then pcall(stopAllMovement) end
+                    end
                     return;
-                end;
+                end
                 local gf = findAllGroundFruits();
                 if #gf > 0 then
                     State.FruitPriorityActive = true;
@@ -2961,27 +2699,43 @@ task.spawn(function()
                                 local ct = fpos;
                                 local fs = tick();
                                 while Cfg.AutoCollectFruit and State.FruitCollectFlightSession == ss and not State.IsScriptDestroyed do
+                                    if Cfg.AutoFarmFactory and State.FactoryCoreAlive then
+                                        State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1
+                                        break
+                                    end
                                     char = plr.Character;
                                     hrp = char and char:FindFirstChild("HumanoidRootPart");
-                                    if not hrp then break end;
-                                    if not fi.Object or not fi.Object.Parent then break end;
+                                    if not hrp then
+                                        State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1
+                                        break
+                                    end
+                                    if not fi.Object or not fi.Object.Parent then
+                                        State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1
+                                        break
+                                    end
                                     local np = fp.Position;
-                                    if not np then break end;
+                                    if not np then
+                                        State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1
+                                        break
+                                    end
                                     ct = np;
                                     if (hrp.Position - ct).Magnitude <= 4 then break end;
-                                    if tick() - fs > 15 then break end;
+                                    if tick() - fs > 15 then
+                                        State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1
+                                        break
+                                    end
                                     moveToTarget(CFrame.new(ct));
                                     task.wait(0.05);
                                 end;
                                 if not Cfg.AutoCollectFruit then
-                                    stopBodyMovers();
+                                    if not anyOtherFlightUser("fruit") then pcall(stopAllMovement) end
                                     State.IsCollectingFruitMoving = false;
                                     State.FruitPriorityActive = false;
                                     State.FruitCollectTargetObject = nil;
                                     return;
                                 end;
                                 if State.FruitCollectFlightSession ~= ss then
-                                    stopBodyMovers();
+                                    if not anyOtherFlightUser("fruit") then pcall(stopAllMovement) end
                                     State.IsCollectingFruitMoving = false;
                                     State.FruitCollectTargetObject = nil;
                                     continue;
@@ -2991,7 +2745,11 @@ task.spawn(function()
                                 if hrp and fp and fp.Parent then
                                     if (hrp.Position - fp.Position).Magnitude <= 8 then
                                         State.IsCollectingFruitMoving = false;
-                                        stopBodyMovers();
+                                        if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+                                        pcall(function()
+                                            hrp.AssemblyLinearVelocity = Vector3.zero;
+                                            hrp.AssemblyAngularVelocity = Vector3.zero;
+                                        end);
                                         pcall(function()
                                             firetouchinterest(hrp, fp, 0);
                                             task.wait(0.03);
@@ -3000,17 +2758,27 @@ task.spawn(function()
                                         task.wait(0.05);
                                     else
                                         State.IsCollectingFruitMoving = false;
-                                        stopBodyMovers();
+                                        if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+                                        pcall(function()
+                                            hrp.AssemblyLinearVelocity = Vector3.zero;
+                                            hrp.AssemblyAngularVelocity = Vector3.zero;
+                                        end);
                                     end;
                                 else
                                     State.IsCollectingFruitMoving = false;
-                                    stopBodyMovers();
+                                    if Flight.bodyVelocity then Flight.bodyVelocity.Velocity = Vector3.zero end
+                                    pcall(function()
+                                        if hrp then
+                                            hrp.AssemblyLinearVelocity = Vector3.zero;
+                                            hrp.AssemblyAngularVelocity = Vector3.zero;
+                                        end;
+                                    end);
                                 end;
                                 State.FruitCollectTargetObject = nil;
                             else
                                 if State.IsCollectingFruitMoving then
                                     State.IsCollectingFruitMoving = false;
-                                    stopBodyMovers();
+                                    if not anyOtherFlightUser("fruit") then pcall(stopAllMovement) end
                                 end;
                                 pcall(function()
                                     firetouchinterest(hrp, fp, 0);
@@ -3036,15 +2804,15 @@ task.spawn(function()
                     State.FruitPriorityActive = false;
                     State.IsCollectingFruitMoving = false;
                     State.LastFruitPickupTime = tick();
-                    if not isMovementActive() then stopBodyMovers() end;
+                    if not anyOtherFlightUser("fruit") then pcall(stopAllMovement) end
                 else
-                    if State.FruitPriorityActive then
+                    if State.FruitPriorityActive or State.IsCollectingFruitMoving or Flight.active then
                         State.FruitPriorityActive = false;
-                        if State.IsCollectingFruitMoving then
-                            State.IsCollectingFruitMoving = false;
-                            stopBodyMovers();
-                        end;
-                    end;
+                        State.IsCollectingFruitMoving = false;
+                        State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1
+                        State.FruitCollectTargetObject = nil
+                        if not anyOtherFlightUser("fruit") then pcall(stopAllMovement) end
+                    end
                 end;
             end);
         else
@@ -3053,8 +2821,7 @@ task.spawn(function()
                 State.IsCollectingFruitMoving = false;
                 State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1;
                 State.FruitCollectTargetObject = nil;
-                stopBodyMovers();
-                cleanExitFlight();
+                if not anyOtherFlightUser("fruit") then pcall(stopAllMovement) end
             end;
         end;
     end;
@@ -3198,26 +2965,73 @@ plr.CharacterAdded:Connect(function(char)
             hum.WalkSpeed = 16;
             hum.JumpPower = Cfg.JumpPowerValue;
             pcall(function() hum.UseJumpPower = true end);
+        end
+    end
+end);
+
+task.spawn(function()
+    while not State.IsScriptDestroyed do
+        task.wait(0.05);
+        if Cfg.PlayerMovementEnabled then
+            local char = plr.Character;
+            local hrp = char and char:FindFirstChild("HumanoidRootPart");
+            local hum = char and char:FindFirstChildOfClass("Humanoid");
+            if hrp and hum and hum.Health > 0 and not Flight.active then
+                if hum.WalkSpeed ~= 16 then pcall(function() hum.WalkSpeed = 16 end) end;
+                local md = hum.MoveDirection;
+                if md.Magnitude > 0.05 then
+                    if not State.WalkBodyVelocity or State.WalkBodyVelocity.Parent ~= hrp then
+                        if State.WalkBodyVelocity then pcall(function() State.WalkBodyVelocity:Destroy() end) end;
+                        State.WalkBodyVelocity = Instance.new("BodyVelocity");
+                        State.WalkBodyVelocity.Name = "Irish_WalkBV";
+                        State.WalkBodyVelocity.MaxForce = Vector3.new(9e9, 0, 9e9);
+                        State.WalkBodyVelocity.P = 1250;
+                        State.WalkBodyVelocity.Parent = hrp;
+                    end;
+                    local ts = tonumber(Cfg.WalkSpeedValue) or 16;
+                    State.WalkBodyVelocity.Velocity = Vector3.new(md.X * ts, 0, md.Z * ts);
+                elseif State.WalkBodyVelocity then
+                    State.WalkBodyVelocity.Velocity = Vector3.zero;
+                end;
+            end;
+        else
+            if State.WalkBodyVelocity then
+                pcall(function() State.WalkBodyVelocity:Destroy() end);
+                State.WalkBodyVelocity = nil;
+            end;
+        end;
+    end;
+end);
+
+task.spawn(function()
+    while not State.IsScriptDestroyed do
+        task.wait(0.15);
+        if not Cfg.AutoSecondSeaQuest and not State.FruitPriorityActive then
+            local busy = Cfg.AutoFarmLevel or Cfg.AutoFarmNearest or Cfg.AutoChestTween or Cfg.AutoTeleportIsland or Cfg.AutoFarmBosses or (Cfg.AutoFarmFactory and State.FactoryCoreAlive) or (Cfg.AutoCollectFruit and State.IsCollectingFruitMoving);
+            if not busy then
+                if Flight.active then stopAllMovement() end
+            end
         end;
     end;
 end);
 
 ISLAND_TELEPORTS = {
-    {"Kingdom of Rose",     CFrame.new(73, 15, 1522)},
-    {"Green Zone",          CFrame.new(-2445.23, 73.21, -3222.68)},
-    {"Graveyard Island",    CFrame.new(-5491.57, 48.52, -795.15)},
-    {"Snow Mountain",       CFrame.new(603.23, 401.46, -5369.25)},
-    {"Hot and Cold (Cold)", CFrame.new(-6221.74, 81.86, -4854.44)},
-    {"Hot and Cold (Hot)",  CFrame.new(-5397.17, 29.21, -5371.64)},
-    {"Ice Castle",          CFrame.new(5673.25, 28.22, -6481.51)},
-    {"Forgotten Island",    CFrame.new(-3048.40, 239.69, -10142.91)},
-    {"Cursed Ship (Entrance)", CFrame.new(-6508.56, 83.23, -132.84)},
-    {"Cursed Ship (Inside)",   CFrame.new(923.21, 125.10, 32852.83)},
+    {"Kingdom of Rose",     CFrame.new(42.95, 19.32, 2834.99)},
+    {"Cafe",                CFrame.new(-385.25, 73.06, 297.39)},
+    {"Green Zone",          CFrame.new(-2198.44, 73.11, -2801.00)},
+    {"Graveyard",           CFrame.new(-5491.56, 48.52, -684.11)},
+    {"Hot",                 CFrame.new(-5413.86, 29.21, -5342.90)},
+    {"Ice Castle",          CFrame.new(5580.47, 28.23, -6307.39)},
+    {"Forgotten Island",    CFrame.new(-3043.31, 238.89, -10191.58)},
+    {"Cursed Ship",         "CURSED_SHIP_SPECIAL"}, -- خيار خاص
 };
 
 local function resolveIslandCF(n, fb)
     for _, item in ipairs(ISLAND_TELEPORTS) do
-        if item[1] == n then return item[2] end;
+        if item[1] == n then 
+            if item[2] == "CURSED_SHIP_SPECIAL" then return "CURSED_SHIP_SPECIAL" end
+            return item[2] 
+        end;
     end;
     return fb;
 end;
@@ -3227,7 +3041,7 @@ Cfg.SelectedIslandName = ISLAND_TELEPORTS[1][1];
 
 local Window = Fluent:CreateWindow({
     Title = "Irish Hub",
-    SubTitle = "Blox Fruits | World 2",
+    SubTitle = "Blox Fruits",
     TabWidth = 160,
     Size = UDim2.fromOffset(560, 460),
     Acrylic = true,
@@ -3238,11 +3052,90 @@ local Window = Fluent:CreateWindow({
 local Tabs = {
     Farm     = Window:AddTab({ Title = "Farm",     Icon = "sword" }),
     Fruits   = Window:AddTab({ Title = "Fruits",   Icon = "apple" }),
+    Status   = Window:AddTab({ Title = "Status",   Icon = "info" }),
     Stats    = Window:AddTab({ Title = "Stats",    Icon = "bar-chart" }),
     Teleport = Window:AddTab({ Title = "Teleport", Icon = "map-pin" }),
     Visuals  = Window:AddTab({ Title = "Visuals",  Icon = "eye" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" }),
 };
+
+Tabs.Status:AddSection("Fruit Shop Stock")
+local StockLabel = Tabs.Status:AddParagraph({ Title = "Normal & Mirage Stock", Content = "Loading..." })
+
+Tabs.Status:AddSection("Factory Timer")
+local TimerLabel = Tabs.Status:AddParagraph({ Title = "Core Respawn", Content = "--:--" })
+
+local function getStock(isAdvanced)
+    local CommF_ = RS:WaitForChild("Remotes"):WaitForChild("CommF_")
+    local ok, data = pcall(function()
+        return CommF_:InvokeServer("GetFruits", isAdvanced == true)
+    end)
+    if not ok or typeof(data) ~= "table" then return nil end
+    local stock = {}
+    for _, fruit in ipairs(data) do
+        if fruit and fruit.OnSale then
+            table.insert(stock, { Name = fruit.Name, Price = fruit.Price })
+        end
+    end
+    return stock
+end
+
+local function formatStock(title, stock)
+    if not stock then return title .. ": (error)" end;
+    local lines = {title .. ":"}
+    for _, f in ipairs(stock) do
+        table.insert(lines, string.format("  - %s | %s Beli", f.Name, tostring(f.Price)))
+    end
+    if #stock == 0 then table.insert(lines, "  (empty)") end;
+    return table.concat(lines, "\n")
+end
+
+local function cleanTimerText(text)
+    if type(text) ~= "string" then return "--:--" end;
+    local cleanText = string.gsub(string.gsub(text, "<.->", ""), "[^%d:]", "")
+    local h, m, s = string.match(cleanText, "(%d+):(%d+):(%d+)")
+    if h then return string.format("%02d:%02d:%02d", tonumber(h), tonumber(m), tonumber(s)) end;
+    local mm, ss = string.match(cleanText, "(%d+):(%d+)")
+    if mm then return string.format("%02d:%02d", tonumber(mm), tonumber(ss)) end;
+    return cleanText ~= "" and cleanText or "--:--";
+end
+
+task.spawn(function()
+    while not State.IsScriptDestroyed do
+        task.wait(0.5)
+        pcall(function()
+            local normalStock = getStock(false)
+            local mirageStock  = getStock(true)
+            local stockText = formatStock("Normal Fruit Stock", normalStock) .. "\n\n" .. formatStock("Mirage Fruit Stock", mirageStock)
+            StockLabel:SetDesc(stockText)
+
+            local rt = nil
+            local main = PlayerGui:FindFirstChild("Main")
+            local top = main and main:FindFirstChild("TopHUDList")
+            if top then
+                local raidTimer = top:FindFirstChild("RaidTimer")
+                if raidTimer and raidTimer.Visible then rt = raidTimer end
+            end
+            if not rt then
+                local origin = workspace:FindFirstChild("_WorldOrigin")
+                local marker = origin and origin:FindFirstChild("CORE Respawn Marker")
+                if marker then
+                    local respTimer = marker:FindFirstChild("RespawnTimer", true)
+                    if respTimer then
+                        local frame = respTimer:FindFirstChild("Frame", true)
+                        if frame then rt = frame:FindFirstChild("Timer") end
+                    end
+                end
+            end
+            if rt then
+                local txt = rt.Text or "--:--"
+                TimerLabel:SetDesc(cleanTimerText(txt))
+            else
+                TimerLabel:SetDesc("--:--")
+            end
+        end)
+    end
+end)
 
 Tabs.Farm:AddSection("Weapon");
 Tabs.Farm:AddDropdown("WeaponSelect", {
@@ -3253,10 +3146,10 @@ Tabs.Farm:AddDropdown("WeaponSelect", {
     Callback = function(v) Cfg.SelectedWeapon = v; equipWeapon(true) end
 });
 
-Tabs.Farm:AddSection("Level Farming (World 2)");
+Tabs.Farm:AddSection("Level Farming");
 Tabs.Farm:AddToggle("AutoFarmLevel", {
     Title = "Auto Farm Level",
-    Description = "auto take quests and farm mobs (World 2: 700-1500)",
+    Description = "auto take quests and farm mobs",
     Default = false,
     Callback = function(v)
         if v then
@@ -3273,6 +3166,7 @@ Tabs.Farm:AddToggle("AutoFarmLevel", {
                 State.PatrolIndex = 1;
                 State.PatrolLastSwitch = 0;
                 clearAllFreezes();
+                mobSweepClear();
             end;
         else
             saveFarmState();
@@ -3284,7 +3178,7 @@ Tabs.Farm:AddToggle("AutoFarmLevel", {
             end;
             State.FastAttackTarget = nil;
             clearAllFreezes();
-            if not isMovementActive() then resetPhysics() end;
+            if not anyOtherFlightUser("level") then stopAllMovement() end;
         end;
     end
 });
@@ -3295,7 +3189,26 @@ Tabs.Farm:AddToggle("AutoFarmNearest", {
     Default = false,
     Callback = function(v)
         Cfg.AutoFarmNearest = v;
-        if not v and not isMovementActive() then resetPhysics() end;
+        if not v and not anyOtherFlightUser("nearest") then stopAllMovement() end;
+    end
+});
+
+Tabs.Farm:AddToggle("AutoFarmFactory", {
+    Title = "Auto Farm Factory",
+    Description = "farm the factory core",
+    Default = false,
+    Callback = function(v)
+        Cfg.AutoFarmFactory = v;
+        if not v then
+            State.FactoryLockedAtFactory = false;
+            State.FactoryLockedPosition = nil;
+            State.FactoryTarget = nil;
+            State.FastAttackTarget = nil;
+            State.FactoryStatus = "idle";
+            State.FactoryCoreAlive = false;
+            State.FactoryRaidActive = false;
+            if not anyOtherFlightUser("factory") then stopAllMovement() end;
+        end
     end
 });
 
@@ -3314,7 +3227,7 @@ Tabs.Farm:AddToggle("AutoChestTween", {
             end;
         else
             if ct then pcall(ct.stop) end;
-            if not isMovementActive() then resetPhysics() end;
+            if not anyOtherFlightUser("chest") then stopAllMovement() end;
         end;
     end
 });
@@ -3338,9 +3251,7 @@ Tabs.Fruits:AddToggle("AutoCollectFruit", {
             State.IsCollectingFruitMoving = false;
             State.FruitCollectFlightSession = State.FruitCollectFlightSession + 1;
             State.FruitCollectTargetObject = nil;
-            stopBodyMovers();
-            cleanExitFlight();
-            if not isMovementActive() then resetPhysics() end;
+            if not anyOtherFlightUser("fruit") then stopAllMovement() end;
         else task.spawn(syncFruitInv) end;
     end
 });
@@ -3388,7 +3299,7 @@ Tabs.Stats:AddToggle("StatFruit",   {Title="Blox Fruit", Default=false, Callback
 local islandNames = {};
 for _, item in ipairs(ISLAND_TELEPORTS) do table.insert(islandNames, item[1]) end;
 
-Tabs.Teleport:AddSection("Island Travel (World 2)");
+Tabs.Teleport:AddSection("Island Travel");
 Tabs.Teleport:AddDropdown("IslandSelect", {
     Title = "Select Island",
     Values = islandNames,
@@ -3414,6 +3325,21 @@ Tabs.Teleport:AddToggle("AutoTeleportIsland", {
                     if not State.FruitPriorityActive then
                         if State.IsTransitioningDimension then task.wait(0.2); continue end;
                         if not Cfg.SelectedIslandCFrame then break end;
+                        
+                        if Cfg.SelectedIslandCFrame == "CURSED_SHIP_SPECIAL" then
+                            if not isInsideShip() then
+                                if not State.ShipTransitionLock and not State.IsTransitioningDimension then
+                                    if not goIntoShip() then Cfg.AutoTeleportIsland = false; break; end
+                                end
+                            else
+                                if not State.ShipTransitionLock and not State.IsTransitioningDimension then
+                                    if not goOutShip() then Cfg.AutoTeleportIsland = false; break; end
+                                end
+                            end
+                            Cfg.AutoTeleportIsland = false;
+                            break;
+                        end;
+
                         local char = plr.Character;
                         local hrp = char and char:FindFirstChild("HumanoidRootPart");
                         if hrp then
@@ -3423,7 +3349,7 @@ Tabs.Teleport:AddToggle("AutoTeleportIsland", {
                             if tp then
                                 if (tp - hrp.Position).Magnitude <= 12 then
                                     Cfg.AutoTeleportIsland = false;
-                                    resetPhysics();
+                                    stopAllMovement();
                                     break;
                                 else moveToTarget(Cfg.SelectedIslandCFrame) end;
                             end;
@@ -3437,7 +3363,7 @@ Tabs.Teleport:AddToggle("AutoTeleportIsland", {
                 Cfg.TeleportFlightThread = nil;
             end;
             State.IsTransitioningDimension = false;
-            if not isMovementActive() then resetPhysics() end;
+            if not anyOtherFlightUser("teleport") then stopAllMovement() end;
         end;
     end
 });
@@ -3465,13 +3391,13 @@ Tabs.Settings:AddSection("Combat");
 Tabs.Settings:AddToggle("FastAttack", {
     Title = "Fast Attack",
     Description = "attack from distance when hold weapon",
-    Default = true,
+    Default = false,
     Callback = function(v) Cfg.AttackAuraAlways = v end
 });
 Tabs.Settings:AddToggle("AutoBuso", {
     Title = "Auto Buso Haki",
     Description = "maintains active buso armament haki",
-    Default = true,
+    Default = false,
     Callback = function(v) Cfg.AutoBuso = v end
 });
 Tabs.Settings:AddSlider("AttackDelay", {
@@ -3548,6 +3474,6 @@ Window:SelectTab(1);
 
 Fluent:Notify({
     Title = "Irish Hub",
-    Content = "World 2 Edition loaded",
+    Content = "Loaded Successfully",
     Duration = 3
 });
